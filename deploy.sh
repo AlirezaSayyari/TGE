@@ -177,6 +177,86 @@ ensure_compose(){
   return 1
 }
 
+iptables_backend_kind(){
+  local bin="$1"
+  have_cmd "$bin" || { echo "missing"; return 0; }
+  local v
+  v="$($bin --version 2>/dev/null || true)"
+  if echo "$v" | grep -qi "legacy"; then
+    echo "legacy"
+  elif echo "$v" | grep -qi "nf_tables"; then
+    echo "nft"
+  else
+    echo "unknown"
+  fi
+}
+
+nft_ruleset_nonempty(){
+  have_cmd nft || return 1
+  local n
+  n="$(nft list ruleset 2>/dev/null | sed '/^[[:space:]]*#/d;/^[[:space:]]*$/d' | wc -l || echo 0)"
+  [[ "${n:-0}" -gt 0 ]]
+}
+
+print_legacy_backend_instructions(){
+  cat <<'EOF'
+Set legacy backend safely (no flush):
+  sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+  sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+  sudo update-alternatives --set arptables /usr/sbin/arptables-legacy   # if installed
+  sudo update-alternatives --set ebtables /usr/sbin/ebtables-legacy     # if installed
+
+If nft rules are active in production, schedule a maintenance window first.
+EOF
+}
+
+enforce_legacy_firewall_backend(){
+  local b4 b6
+  b4="$(iptables_backend_kind iptables)"
+  b6="$(iptables_backend_kind ip6tables)"
+  if [[ "$b4" == "legacy" && "$b6" == "legacy" ]]; then
+    log "Firewall backend already legacy (iptables/ip6tables)."
+    return 0
+  fi
+
+  if ! have_cmd update-alternatives; then
+    err "update-alternatives not found; cannot enforce legacy backend safely."
+    print_legacy_backend_instructions
+    return 60
+  fi
+  if [[ ! -x /usr/sbin/iptables-legacy || ! -x /usr/sbin/ip6tables-legacy ]]; then
+    err "iptables-legacy/ip6tables-legacy binaries are missing."
+    print_legacy_backend_instructions
+    return 60
+  fi
+
+  if nft_ruleset_nonempty; then
+    err "Detected active nft ruleset. Automatic backend switch is risky; refusing to force."
+    print_legacy_backend_instructions
+    return 61
+  fi
+
+  log "Switching firewall backend to legacy (iptables/ip6tables)..."
+  update-alternatives --set iptables /usr/sbin/iptables-legacy
+  update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+  if update-alternatives --query arptables >/dev/null 2>&1 && [[ -x /usr/sbin/arptables-legacy ]]; then
+    update-alternatives --set arptables /usr/sbin/arptables-legacy || true
+  fi
+  if update-alternatives --query ebtables >/dev/null 2>&1 && [[ -x /usr/sbin/ebtables-legacy ]]; then
+    update-alternatives --set ebtables /usr/sbin/ebtables-legacy || true
+  fi
+
+  b4="$(iptables_backend_kind iptables)"
+  b6="$(iptables_backend_kind ip6tables)"
+  if [[ "$b4" != "legacy" || "$b6" != "legacy" ]]; then
+    err "Backend verification failed: iptables=$b4 ip6tables=$b6"
+    print_legacy_backend_instructions
+    return 62
+  fi
+
+  log "Firewall backend enforced: legacy."
+}
+
 # -----------------------------
 # Install our files (always)
 # -----------------------------
@@ -269,6 +349,7 @@ main(){
   apt_update
   log "Installing base dependencies..."
   apt_install ca-certificates curl jq iproute2 iptables lsof >/dev/null
+  enforce_legacy_firewall_backend
 
   # Required order: Docker -> Compose -> deploy/start v2rayA -> finalize TGE install.
   ensure_docker

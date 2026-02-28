@@ -64,6 +64,46 @@ except Exception:
 PY
 }
 
+iptables_backend_kind(){
+  local bin="$1"
+  command -v "$bin" >/dev/null 2>&1 || { echo "missing"; return 0; }
+  local v
+  v="$($bin --version 2>/dev/null || true)"
+  if echo "$v" | grep -qi "legacy"; then
+    echo "legacy"
+  elif echo "$v" | grep -qi "nf_tables"; then
+    echo "nft"
+  else
+    echo "unknown"
+  fi
+}
+
+print_legacy_backend_instructions(){
+  cat <<'EOF'
+Set legacy backend safely (no flush):
+  sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+  sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+  sudo update-alternatives --set arptables /usr/sbin/arptables-legacy   # if installed
+  sudo update-alternatives --set ebtables /usr/sbin/ebtables-legacy     # if installed
+
+If nft rules are currently active in production, plan a maintenance window first.
+EOF
+}
+
+assert_legacy_firewall_backend(){
+  local b4 b6
+  b4="$(iptables_backend_kind iptables)"
+  b6="$(iptables_backend_kind ip6tables)"
+  if [[ "$b4" == "legacy" && "$b6" == "legacy" ]]; then
+    return 0
+  fi
+
+  echo "[ERROR] firewall backend mismatch: iptables=$b4 ip6tables=$b6" >&2
+  echo "[ERROR] V2rayTGE requires iptables-legacy/ip6tables-legacy for predictable behavior." >&2
+  print_legacy_backend_instructions >&2
+  return 1
+}
+
 validate_int_range(){
   local v="$1" min="$2" max="$3"
   [[ "$v" =~ ^[0-9]+$ ]] || { echo "ERROR: not integer: $v"; exit 1; }

@@ -15,6 +15,8 @@ echo
 
 ok=1
 
+
+
 check() {
   local name="$1"; shift
   if "$@"; then
@@ -25,6 +27,10 @@ check() {
   fi
 }
 
+check "iptables backend legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
+check "ip6tables backend legacy" bash -lc "ip6tables --version 2>/dev/null | grep -qi legacy"
+
+
 check "gre exists" ip link show "$GRE_IF" >/dev/null 2>&1
 check "tun0 exists" ip link show "$TUN_IF" >/dev/null 2>&1
 check "ip rule 100" ip -o rule show | grep -qE '^100:.*iif '"$GRE_IF"'.*lookup '"$V2RAY_TABLE"
@@ -32,7 +38,7 @@ check "ip rule 110" ip -o rule show | grep -qE '^110:.*iif '"$TUN_IF"'.*lookup '
 check "v2ray table default" ip route show table "$V2RAY_TABLE" | grep -qE '^default dev '"$TUN_IF"
 
 # MSS rule
-check "MSS clamp rule" sudo iptables-legacy -t mangle -S FORWARD | grep -qE "gre.*$GRE_IF.*$TUN_IF.*set-mss $MSS_CLAMP"
+check "MSS clamp rule" iptables-legacy -t mangle -S FORWARD | grep -qE "gre.*$GRE_IF.*$TUN_IF.*set-mss $MSS_CLAMP"
 
 # quick egress test from gateway (optional)
 if ip link show "$TUN_IF" >/dev/null 2>&1; then

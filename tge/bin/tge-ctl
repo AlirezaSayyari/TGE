@@ -60,6 +60,12 @@ activate() {
   load_cfg
   echo "[tge-ctl] Activating..."
 
+  if ! assert_legacy_firewall_backend; then
+    echo "[tge-ctl] Activation requires legacy firewall backend." >&2
+    exit 40
+  fi
+
+
   # Bring up v2rayA container (best effort)
   compose_up
 

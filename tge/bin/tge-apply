@@ -11,6 +11,12 @@ mkdir -p "$LOG_DIR"
 
 need_root
 
+if ! assert_legacy_firewall_backend; then
+  echo "[tge-apply] Refusing to continue with non-legacy firewall backend." >&2
+  exit 40
+fi
+
+
 if [[ ! -f "$CFG" ]]; then
   echo "[tge-apply] ERROR: config not found: $CFG"
   echo "[tge-apply] Run: sudo tge  ->  Config Egress System"
