@@ -177,11 +177,12 @@ In v2rayA:
 From CLI menu, or:
 
 ```bash
-sudo tge-apply --activate
+sudo tge-ctl --activate
 ```
 
 Activate does:
 
+* runs firewall backend preflight (`legacy` by default)
 * starts v2rayA via docker compose
 * enables systemd units (GRE ensure + apply + path + timer)
 * runs an immediate safe ensure pass
@@ -189,7 +190,7 @@ Activate does:
 ### Deactivate
 
 ```bash
-sudo tge-apply --deactivate
+sudo tge-ctl --deactivate
 ```
 
 Deactivate is safe:
@@ -237,36 +238,55 @@ Checks:
 
 ---
 
-## Troubleshooting
+## Firewall Backend (Recommended: legacy)
 
-### A) Ping works, but HTTPS/TLS hangs
+V2rayTGE is optimized for gateway stability with **iptables-legacy** as the default/recommended backend.
 
-This is usually PMTU/MSS.
+Why:
 
-Check MSS rule:
+* Docker + nft backend combinations can create backend mismatch conditions where packets are accepted in one stack but expected in another.
+* On GRE/tun gateway paths, this mismatch can cause intermittent or full traffic drops even when routes/rules look correct.
+
+Backend mode knob:
+
+* Default: `TGE_FIREWALL_BACKEND=legacy`
+* Advanced/experimental: `TGE_FIREWALL_BACKEND=nft`
+
+If you explicitly choose nft mode, V2rayTGE will not force backend alternatives and will continue with warnings.
+
+## Troubleshooting: traffic not passing after install
+
+1. Check backend:
 
 ```bash
-sudo iptables-legacy -t mangle -S FORWARD | grep 'set-mss'
+iptables --version
+update-alternatives --display iptables
 ```
 
-You should see something like:
-
-```
--A FORWARD -i gre-egress -o tun0 ... -j TCPMSS --set-mss 1436
-```
-
-### B) Missing policy rules (100/110)
+2. If backend is not legacy, switch safely:
 
 ```bash
-ip -o rule show | egrep '^(100|101|110):'
+sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
+sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
+```
+
+3. Restart Docker after backend switch:
+
+```bash
+sudo systemctl restart docker
+```
+
+4. Re-apply TGE rules/services:
+
+```bash
 sudo systemctl restart tge-apply.service
 ```
 
-### C) GRE tunnel missing
+5. Verify health and rules:
 
 ```bash
-sudo systemctl status tge-gre.service --no-pager -l
-ip -d tunnel show gre-egress
+sudo tge-health
+ip -o rule show | egrep '^(100|101|110):'
 ```
 
 ---
@@ -287,7 +307,7 @@ V2rayTGE avoids destructive operations by design:
 1. Deactivate:
 
 ```bash
-sudo tge-apply --deactivate
+sudo tge-ctl --deactivate
 ```
 
 2. Disable units:
@@ -304,3 +324,5 @@ sudo rm -f /usr/local/sbin/tge /usr/local/sbin/tge-*
 sudo rm -f /etc/systemd/system/tge-*.service /etc/systemd/system/tge-*.timer /etc/systemd/system/tge-*.path
 sudo systemctl daemon-reload
 ```
+
+

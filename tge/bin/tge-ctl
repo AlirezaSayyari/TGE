@@ -20,6 +20,7 @@ load_cfg() {
 
   GRE_IF="${GRE_IF:-gre-egress}"
   TUN_IF="${TUN_IF:-tun0}"
+  V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
   if [[ -n "${GRE_TUN_IP:-}" ]]; then
     GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
   else
@@ -60,8 +61,8 @@ activate() {
   load_cfg
   echo "[tge-ctl] Activating..."
 
-  if ! assert_legacy_firewall_backend; then
-    echo "[tge-ctl] Activation requires legacy firewall backend." >&2
+  if ! firewall_backend_preflight; then
+    echo "[tge-ctl] Activation stopped: firewall backend preflight failed." >&2
     exit 40
   fi
 
@@ -95,8 +96,8 @@ deactivate() {
 
   # Remove ONLY our known rules if present (no flush)
   # ip rules (only if exactly match existing line)
-  safe_ip_rule_del 100 "iif $GRE_IF lookup v2ray"
-  safe_ip_rule_del 110 "iif $TUN_IF lookup v2ray"
+  safe_ip_rule_del 100 "iif $GRE_IF lookup $V2RAY_TABLE"
+  safe_ip_rule_del 110 "iif $TUN_IF lookup $V2RAY_TABLE"
   safe_ip_rule_del 101 "to $GRE_SUBNET_GREP lookup main" || true
 
   # Remove iptables rules that belong to us (best-effort)
@@ -105,6 +106,7 @@ deactivate() {
     . "$CFG"
     GRE_IF="${GRE_IF:-gre-egress}"
     TUN_IF="${TUN_IF:-tun0}"
+    V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
     MSS_CLAMP="${MSS_CLAMP:-1436}"
     LAN_CIDRS="${LAN_CIDRS:-}"
   fi

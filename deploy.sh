@@ -6,15 +6,13 @@ REPO_RAW="https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main"
 INSTALL_DIR="/opt/tge"
 BIN_DIR="/usr/local/bin"
 
-FAST_INSTALL="${FAST_INSTALL:-0}"                 # 1=stop apt background services temporarily (opt-in)
-APT_LOCK_TIMEOUT_SEC="${APT_LOCK_TIMEOUT_SEC:-1800}"
-APT_LOCK_POLL_SEC="${APT_LOCK_POLL_SEC:-10}"
+# Docker install: only via get.docker.com when docker is missing (Ubuntu).
 
-# Docker install policy:
-#  - auto (default): try ubuntu docker.io, if fails -> fallback to get.docker.com
-#  - ubuntu: only ubuntu repo docker.io
-#  - getdocker: only get.docker.com
-DOCKER_INSTALL_MODE="${DOCKER_INSTALL_MODE:-auto}"
+FAST_INSTALL="${FAST_INSTALL:-0}"                 # 1=stop apt background services temporarily (opt-in)
+APT_LOCK_TIMEOUT_SEC="${APT_LOCK_TIMEOUT_SEC:-600}"
+APT_LOCK_POLL_SEC="${APT_LOCK_POLL_SEC:-5}"
+TGE_FIREWALL_BACKEND="${TGE_FIREWALL_BACKEND:-legacy}"
+
 
 log(){ echo -e "\e[32m[deploy]\e[0m $*"; }
 warn(){ echo -e "\e[33m[deploy][WARN]\e[0m $*"; }
@@ -49,6 +47,13 @@ show_lock_holders(){
 
 wait_for_apt_lock(){
   local start now elapsed
+  if ! [[ "$APT_LOCK_TIMEOUT_SEC" =~ ^[0-9]+$ ]] || (( APT_LOCK_TIMEOUT_SEC < 1 )); then
+    APT_LOCK_TIMEOUT_SEC=600
+  fi
+  if (( APT_LOCK_TIMEOUT_SEC > 600 )); then
+    warn "APT_LOCK_TIMEOUT_SEC capped to 600s."
+    APT_LOCK_TIMEOUT_SEC=600
+  fi
   start="$(date +%s)"
 
   if apt_locked; then
@@ -62,7 +67,7 @@ wait_for_apt_lock(){
     elapsed=$((now - start))
     if (( elapsed >= APT_LOCK_TIMEOUT_SEC )); then
       err "Timed out waiting for apt/dpkg lock after ${elapsed}s."
-      err "Try again later, or set FAST_INSTALL=1, or increase APT_LOCK_TIMEOUT_SEC."
+      err "Try again later, or set FAST_INSTALL=1 to stop apt background services and retry."
       show_lock_holders
       exit 50
     fi
@@ -115,13 +120,6 @@ docker_ok(){
   return 0
 }
 
-install_docker_ubuntu(){
-  warn "Trying Docker via Ubuntu packages (docker.io)..."
-  apt_install docker.io || return 1
-  systemctl enable --now docker >/dev/null 2>&1 || true
-  docker_ok
-}
-
 install_docker_getdocker(){
   warn "Trying Docker via get.docker.com (Docker CE)..."
   # We do not purge/remove anything. This is for fresh servers or where ubuntu install failed.
@@ -138,25 +136,16 @@ ensure_docker(){
     return 0
   fi
 
-  case "$DOCKER_INSTALL_MODE" in
-    ubuntu)
-      install_docker_ubuntu || return 1
-      ;;
-    getdocker)
-      install_docker_getdocker || return 1
-      ;;
-    auto)
-      if install_docker_ubuntu; then
-        return 0
-      fi
-      warn "Ubuntu docker.io install failed (often containerd conflicts). Falling back to get.docker.com..."
-      install_docker_getdocker || return 1
-      ;;
-    *)
-      err "Unknown DOCKER_INSTALL_MODE=$DOCKER_INSTALL_MODE (use: auto|ubuntu|getdocker)"
-      return 1
-      ;;
-  esac
+  if [[ -r /etc/os-release ]]; then
+    # shellcheck disable=SC1091
+    . /etc/os-release
+  fi
+  if [[ "${ID:-}" != "ubuntu" ]]; then
+    err "Docker auto-install is supported only on Ubuntu. Install Docker manually and re-run deploy."
+    return 1
+  fi
+
+  install_docker_getdocker || return 1
 }
 
 ensure_compose(){
@@ -203,58 +192,117 @@ print_legacy_backend_instructions(){
 Set legacy backend safely (no flush):
   sudo update-alternatives --set iptables /usr/sbin/iptables-legacy
   sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
-  sudo update-alternatives --set arptables /usr/sbin/arptables-legacy   # if installed
-  sudo update-alternatives --set ebtables /usr/sbin/ebtables-legacy     # if installed
+
+Optional (if alternatives exist):
+  sudo update-alternatives --set iptables-save /usr/sbin/iptables-legacy-save
+  sudo update-alternatives --set iptables-restore /usr/sbin/iptables-legacy-restore
+  sudo update-alternatives --set ip6tables-save /usr/sbin/ip6tables-legacy-save
+  sudo update-alternatives --set ip6tables-restore /usr/sbin/ip6tables-legacy-restore
 
 If nft rules are active in production, schedule a maintenance window first.
 EOF
+}
+
+firewall_backend_mode(){
+  local mode="${TGE_FIREWALL_BACKEND:-legacy}"
+  mode="$(echo "$mode" | tr '[:upper:]' '[:lower:]')"
+  [[ -z "$mode" ]] && mode="legacy"
+  echo "$mode"
+}
+
+set_alternative_optional(){
+  local name="$1" target="$2"
+  if ! update-alternatives --query "$name" >/dev/null 2>&1; then
+    warn "[firewall] optional alternative missing: $name"
+    return 0
+  fi
+  if [[ ! -x "$target" ]]; then
+    warn "[firewall] optional target missing for $name: $target"
+    return 0
+  fi
+  update-alternatives --set "$name" "$target" || true
+}
+
+restart_docker_if_running(){
+  have_cmd systemctl || return 0
+  systemctl list-unit-files 2>/dev/null | grep -q '^docker\.service' || return 0
+  if systemctl is-active --quiet docker; then
+    log "[firewall] restarting docker service after backend switch..."
+    systemctl restart docker || warn "[firewall] docker restart failed; restart manually."
+  fi
 }
 
 enforce_legacy_firewall_backend(){
   local b4 b6
   b4="$(iptables_backend_kind iptables)"
   b6="$(iptables_backend_kind ip6tables)"
-  if [[ "$b4" == "legacy" && "$b6" == "legacy" ]]; then
-    log "Firewall backend already legacy (iptables/ip6tables)."
+  if [[ "$b4" == "legacy" && ( "$b6" == "legacy" || "$b6" == "missing" ) ]]; then
+    log "[firewall] backend already legacy (iptables=$b4 ip6tables=$b6)."
     return 0
   fi
 
   if ! have_cmd update-alternatives; then
-    err "update-alternatives not found; cannot enforce legacy backend safely."
+    err "[firewall] update-alternatives not found; cannot enforce legacy backend safely."
     print_legacy_backend_instructions
     return 60
   fi
-  if [[ ! -x /usr/sbin/iptables-legacy || ! -x /usr/sbin/ip6tables-legacy ]]; then
-    err "iptables-legacy/ip6tables-legacy binaries are missing."
+  if [[ ! -x /usr/sbin/iptables-legacy ]]; then
+    err "[firewall] /usr/sbin/iptables-legacy not found."
+    print_legacy_backend_instructions
+    return 60
+  fi
+  if have_cmd ip6tables && [[ ! -x /usr/sbin/ip6tables-legacy ]]; then
+    err "[firewall] /usr/sbin/ip6tables-legacy not found."
     print_legacy_backend_instructions
     return 60
   fi
 
   if nft_ruleset_nonempty; then
-    err "Detected active nft ruleset. Automatic backend switch is risky; refusing to force."
+    err "[firewall] active nft ruleset detected; refusing risky auto-switch."
     print_legacy_backend_instructions
     return 61
   fi
 
-  log "Switching firewall backend to legacy (iptables/ip6tables)..."
+  log "[firewall] switching backend to legacy..."
   update-alternatives --set iptables /usr/sbin/iptables-legacy
-  update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
-  if update-alternatives --query arptables >/dev/null 2>&1 && [[ -x /usr/sbin/arptables-legacy ]]; then
-    update-alternatives --set arptables /usr/sbin/arptables-legacy || true
+  if have_cmd ip6tables; then
+    update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
   fi
-  if update-alternatives --query ebtables >/dev/null 2>&1 && [[ -x /usr/sbin/ebtables-legacy ]]; then
-    update-alternatives --set ebtables /usr/sbin/ebtables-legacy || true
-  fi
+  set_alternative_optional iptables-save /usr/sbin/iptables-legacy-save
+  set_alternative_optional iptables-restore /usr/sbin/iptables-legacy-restore
+  set_alternative_optional ip6tables-save /usr/sbin/ip6tables-legacy-save
+  set_alternative_optional ip6tables-restore /usr/sbin/ip6tables-legacy-restore
 
   b4="$(iptables_backend_kind iptables)"
   b6="$(iptables_backend_kind ip6tables)"
-  if [[ "$b4" != "legacy" || "$b6" != "legacy" ]]; then
-    err "Backend verification failed: iptables=$b4 ip6tables=$b6"
-    print_legacy_backend_instructions
+  if [[ "$b4" != "legacy" || ( "$b6" != "legacy" && "$b6" != "missing" ) ]]; then
+    err "[firewall] backend verification failed: iptables=$b4 ip6tables=$b6"
     return 62
   fi
 
-  log "Firewall backend enforced: legacy."
+  log "[firewall] backend enforced: legacy."
+}
+
+firewall_backend_preflight(){
+  local mode
+  mode="$(firewall_backend_mode)"
+  case "$mode" in
+    legacy|nft) ;;
+    *)
+      err "[firewall] invalid TGE_FIREWALL_BACKEND=$mode (use legacy|nft)"
+      return 2
+      ;;
+  esac
+
+  if [[ "$mode" == "nft" ]]; then
+    warn "[firewall] TGE_FIREWALL_BACKEND=nft selected (advanced/experimental)."
+    warn "[firewall] no alternatives switch will be performed."
+    log "[firewall] current backend: iptables=$(iptables_backend_kind iptables) ip6tables=$(iptables_backend_kind ip6tables)"
+    return 0
+  fi
+
+  enforce_legacy_firewall_backend || return $?
+  restart_docker_if_running || true
 }
 
 # -----------------------------
@@ -327,16 +375,17 @@ Run:
   sudo tge
 
 Docker install behavior:
-- If Docker exists & works → deploy will NOT touch Docker.
-- If Docker is missing:
-    DOCKER_INSTALL_MODE=auto    → try Ubuntu docker.io then fallback to get.docker.com
-    DOCKER_INSTALL_MODE=ubuntu  → only Ubuntu docker.io
-    DOCKER_INSTALL_MODE=getdocker → only get.docker.com
+- If Docker exists & works, deploy does NOT reinstall Docker.
+- If Docker is missing on Ubuntu, deploy installs via get.docker.com.
+
+Firewall backend mode:
+- Default recommended: TGE_FIREWALL_BACKEND=legacy
+- Advanced/experimental: TGE_FIREWALL_BACKEND=nft
 
 Examples:
   curl -fsSL $REPO_RAW/deploy.sh | sudo bash
   curl -fsSL $REPO_RAW/deploy.sh | sudo FAST_INSTALL=1 bash
-  curl -fsSL $REPO_RAW/deploy.sh | sudo DOCKER_INSTALL_MODE=getdocker bash
+  curl -fsSL $REPO_RAW/deploy.sh | sudo TGE_FIREWALL_BACKEND=nft bash
 
 EOF
 }
@@ -349,10 +398,10 @@ main(){
   apt_update
   log "Installing base dependencies..."
   apt_install ca-certificates curl jq iproute2 iptables lsof >/dev/null
-  enforce_legacy_firewall_backend
 
-  # Required order: Docker -> Compose -> deploy/start v2rayA -> finalize TGE install.
+  # Required order: Docker -> backend preflight -> Compose -> deploy/start v2rayA -> finalize TGE install.
   ensure_docker
+  firewall_backend_preflight
   ensure_compose
   mkdir -p /opt/v2raytge/docker
   curl -fsSL "$REPO_RAW/tge/docker/docker-compose.yml" -o /opt/v2raytge/docker/docker-compose.yml

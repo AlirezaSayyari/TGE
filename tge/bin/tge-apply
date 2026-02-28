@@ -11,8 +11,8 @@ mkdir -p "$LOG_DIR"
 
 need_root
 
-if ! assert_legacy_firewall_backend; then
-  echo "[tge-apply] Refusing to continue with non-legacy firewall backend." >&2
+if ! firewall_backend_preflight; then
+  echo "[tge-apply] Refusing to continue due to firewall backend preflight failure." >&2
   exit 40
 fi
 
@@ -104,24 +104,25 @@ ensure_rule_pref 110 "iif ${TUN_IF} .*lookup ${V2RAY_TABLE}" \
 
 ip route flush cache || true
 
-# 5) iptables-legacy ensure-only (NO flush, NO policy change)
+# 5) iptables ensure-only (NO flush, NO policy change)
 
 # NAT: MASQUERADE each LAN CIDR out of tun0
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
-    iptables_legacy_ensure nat POSTROUTING "-s $cidr -o $TUN_IF -j MASQUERADE"
+    iptables_ensure nat POSTROUTING "-s $cidr -o $TUN_IF -j MASQUERADE"
   done
 fi
 
 # FORWARD allow gre->tun and return established
-iptables_legacy_ensure filter FORWARD "-i $GRE_IF -o $TUN_IF -j ACCEPT"
-iptables_legacy_ensure filter FORWARD "-i $TUN_IF -o $GRE_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
+iptables_ensure filter FORWARD "-i $GRE_IF -o $TUN_IF -j ACCEPT"
+iptables_ensure filter FORWARD "-i $TUN_IF -o $GRE_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
 
 # MSS Clamp critical fix: insert as FIRST rule if missing (GRE->tun0)
-iptables_legacy_ensure_mangle_insert_first "$GRE_IF" "$TUN_IF" "$MSS_CLAMP"
+iptables_ensure_mangle_insert_first "$GRE_IF" "$TUN_IF" "$MSS_CLAMP"
 
 # Keep generic clamps (ensure only)
-iptables_legacy_ensure mangle FORWARD "-o $TUN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
-iptables_legacy_ensure mangle FORWARD "-o $GRE_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+iptables_ensure mangle FORWARD "-o $TUN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
+iptables_ensure mangle FORWARD "-o $GRE_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
 
 log "OK: ensured."
+
