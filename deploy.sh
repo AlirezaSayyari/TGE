@@ -488,7 +488,6 @@ main(){
   sed -i 's/\r$//' /opt/v2raytge/docker/docker-compose.yml
   cd /opt/v2raytge/docker
   docker compose up -d
-  discover_cli_metadata
   install_files
 
   start_apt_background_services
