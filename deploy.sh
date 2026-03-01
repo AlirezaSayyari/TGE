@@ -12,6 +12,10 @@ FAST_INSTALL="${FAST_INSTALL:-0}"                 # 1=stop apt background servic
 APT_LOCK_TIMEOUT_SEC="${APT_LOCK_TIMEOUT_SEC:-600}"
 APT_LOCK_POLL_SEC="${APT_LOCK_POLL_SEC:-5}"
 TGE_FIREWALL_BACKEND="${TGE_FIREWALL_BACKEND:-legacy}"
+TGE_CLI_VERSION="${TGE_CLI_VERSION:-0.0.0-dev}"
+TGE_CLI_BRANCH="${TGE_CLI_BRANCH:-main}"
+TGE_CLI_CHANNEL="${TGE_CLI_CHANNEL:-latest}"
+FIREWALL_SWITCHED=0
 
 
 log(){ echo -e "\e[32m[deploy]\e[0m $*"; }
@@ -263,6 +267,24 @@ enforce_legacy_firewall_backend(){
     return 61
   fi
 
+  if [[ "${TGE_ASSUME_YES:-0}" != "1" ]]; then
+    if [[ -t 0 ]]; then
+      local confirm
+      read -r -p "[firewall] Switch backend to legacy now (recommended)? [Y/n]: " confirm || true
+      confirm="${confirm:-Y}"
+      if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        warn "[firewall] switch canceled by user."
+        print_legacy_backend_instructions
+        return 64
+      fi
+    else
+      err "[firewall] non-interactive mode cannot confirm backend switch."
+      err "[firewall] set TGE_ASSUME_YES=1 to allow non-interactive switch."
+      print_legacy_backend_instructions
+      return 64
+    fi
+  fi
+
   log "[firewall] switching backend to legacy..."
   update-alternatives --set iptables /usr/sbin/iptables-legacy
   if have_cmd ip6tables; then
@@ -281,6 +303,7 @@ enforce_legacy_firewall_backend(){
   fi
 
   log "[firewall] backend enforced: legacy."
+  FIREWALL_SWITCHED=1
 }
 
 firewall_backend_preflight(){
@@ -305,6 +328,30 @@ firewall_backend_preflight(){
   restart_docker_if_running || true
 }
 
+
+prompt_reboot_after_backend_switch(){
+  [[ "${FIREWALL_SWITCHED:-0}" == "1" ]] || return 0
+
+  echo
+  warn "[firewall] backend was changed to legacy. Reboot is required before continuing install."
+  warn "After reboot, run the same install command again."
+
+  local ans="n"
+  if [[ -t 0 ]]; then
+    read -r -p "Reboot now? [y/N]: " ans || true
+  else
+    warn "No interactive TTY detected. Reboot was not triggered automatically."
+  fi
+
+  if [[ "$ans" =~ ^[Yy]$ ]]; then
+    log "Rebooting now..."
+    reboot
+  else
+    warn "Please reboot the server now, then run the install command again."
+  fi
+
+  exit 0
+}
 # -----------------------------
 # Install our files (always)
 # -----------------------------
@@ -345,6 +392,12 @@ install_files(){
   install -m 0755 /opt/tge/bin/tge-health     /usr/local/sbin/tge-health
   install -m 0755 /opt/tge/bin/tge-logs       /usr/local/sbin/tge-logs
   install -m 0644 /opt/tge/bin/tge-lib.sh /opt/v2raytge/tge-lib.sh
+  cat > /opt/v2raytge/meta.env <<EOF
+TGE_CLI_VERSION="$TGE_CLI_VERSION"
+TGE_CLI_BRANCH="$TGE_CLI_BRANCH"
+TGE_CLI_CHANNEL="$TGE_CLI_CHANNEL"
+EOF
+  chmod 0644 /opt/v2raytge/meta.env
   install -m 0644 /opt/tge/systemd/tge-gre.service   /etc/systemd/system/tge-gre.service
   install -m 0644 /opt/tge/systemd/tge-apply.service /etc/systemd/system/tge-apply.service
   install -m 0644 /opt/tge/systemd/tge-apply.path    /etc/systemd/system/tge-apply.path
@@ -402,6 +455,7 @@ main(){
   # Required order: Docker -> backend preflight -> Compose -> deploy/start v2rayA -> finalize TGE install.
   ensure_docker
   firewall_backend_preflight
+  prompt_reboot_after_backend_switch
   ensure_compose
   mkdir -p /opt/v2raytge/docker
   curl -fsSL "$REPO_RAW/tge/docker/docker-compose.yml" -o /opt/v2raytge/docker/docker-compose.yml

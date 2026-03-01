@@ -1,17 +1,29 @@
 #!/usr/bin/env bash
-set -euo pipefail
+set -uo pipefail
 
 ETC_DIR="/opt/v2raytge"
 CFG="$ETC_DIR/config.env"
 LOG_DIR="/var/log/v2raytge"
+META_FILE="$ETC_DIR/meta.env"
 
 mkdir -p "$ETC_DIR" "$LOG_DIR"
 
+CLI_VERSION="${TGE_CLI_VERSION:-0.0.0-dev}"
+CLI_BRANCH="${TGE_CLI_BRANCH:-main}"
+CLI_CHANNEL="${TGE_CLI_CHANNEL:-latest}"
+LAST_ERROR=""
+
 menu() {
   clear
-  echo "========================================"
+  echo "============================================================"
   echo " V2rayTGE - Traffic Gateway Egress (CLI)"
-  echo "========================================"
+  echo " Version: ${CLI_VERSION} | Branch: ${CLI_BRANCH} | Channel: ${CLI_CHANNEL}"
+  echo "============================================================"
+  if [[ -n "$LAST_ERROR" ]]; then
+    echo "------------------------ Last Error ------------------------"
+    echo "$LAST_ERROR"
+    echo "------------------------------------------------------------"
+  fi
   echo "1) Help & Introduction"
   echo "2) Config Egress System (Wizard)"
   echo "3) Activate Egress System"
@@ -41,6 +53,10 @@ Install flow (current)
 - It deploys and starts v2rayA from /opt/v2raytge/docker/docker-compose.yml.
 - Then it completes TGE CLI installation.
 
+Important install note
+- If firewall backend switches to legacy during deploy, reboot is required.
+- After reboot, run the same deploy command again to continue installation.
+
 Prerequisites
 - Ubuntu Server
 - GRE tunnel from edge device to this server
@@ -62,42 +78,65 @@ EOF
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
-    echo "Run as root: sudo tge"
-    exit 1
+    LAST_ERROR="Run as root: sudo tge"
+    return 1
   fi
+  return 0
+}
+
+run_and_capture_error() {
+  local action="$1"
+  shift
+  local output rc
+
+  output="$($@ 2>&1)"
+  rc=$?
+
+  if [[ $rc -ne 0 ]]; then
+    LAST_ERROR="[$action] failed (exit $rc)"
+    if [[ -n "$output" ]]; then
+      LAST_ERROR+=$'\n'
+      LAST_ERROR+="$output"
+    fi
+    return 1
+  fi
+
+  LAST_ERROR=""
+  [[ -n "$output" ]] && echo "$output"
+  return 0
 }
 
 activate() {
-  require_root
-  /usr/local/sbin/tge-ctl --activate
+  require_root || return 0
+  run_and_capture_error "Activate" /usr/local/sbin/tge-ctl --activate || true
   echo "Press Enter..."
   read -r
 }
 
 deactivate() {
-  require_root
-  /usr/local/sbin/tge-ctl --deactivate
+  require_root || return 0
+  run_and_capture_error "Deactivate" /usr/local/sbin/tge-ctl --deactivate || true
   echo "Press Enter..."
   read -r
 }
 
 config_wizard() {
-  require_root
-  /usr/local/sbin/tge-config
+  require_root || return 0
+  run_and_capture_error "Config Wizard" /usr/local/sbin/tge-config || true
   echo "Press Enter..."
   read -r
 }
 
 health() {
-  require_root
-  /usr/local/sbin/tge-health
+  require_root || return 0
+  run_and_capture_error "Health Check" /usr/local/sbin/tge-health || true
   echo "Press Enter..."
   read -r
 }
 
 logs() {
-  require_root
-  /usr/local/sbin/tge-logs
+  require_root || return 0
+  run_and_capture_error "Log" /usr/local/sbin/tge-logs || true
   echo "Press Enter..."
   read -r
 }
@@ -113,6 +152,6 @@ while true; do
     5) health ;;
     6) logs ;;
     0) exit 0 ;;
-    *) echo "Invalid. Enter..." ; read -r ;;
+    *) LAST_ERROR="Invalid selection: $choice" ;;
   esac
 done

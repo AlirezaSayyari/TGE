@@ -8,6 +8,8 @@ mkdir -p "$ETC_DIR"
 . "$ETC_DIR/tge-lib.sh"
 
 need_root
+default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
+
 
 echo "=== V2rayTGE Config Wizard ==="
 
@@ -25,20 +27,22 @@ gre_local_ip="${gre_local_ip:-$local_ip}"
 validate_ipv4 "$gre_local_ip"
 
 # 4.2 remote GRE IP
-read -r -p "Enter GRE remote IP (edge device public/private IP): " gre_remote_ip
+read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
+gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
 validate_ipv4 "$gre_remote_ip"
 
 # 4.3 GRE tunnel IP (e.g. 10.255.255.2/30)
-read -r -p "Enter GRE tunnel IP/CIDR for THIS server (e.g. 10.255.255.2/30): " gre_tun_ip
+read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
+gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
 validate_cidr "$gre_tun_ip"
 
 # GRE MTU
-read -r -p "Enter GRE MTU [1476]: " gre_mtu
-gre_mtu="${gre_mtu:-1476}"
+read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
+gre_mtu="${gre_mtu:-$default_gre_mtu}"
 validate_int_range "$gre_mtu" 1200 9000
 
 # 4.4 LAN CIDRs (multiple)
-echo "Enter LAN CIDRs behind edge device (multiple allowed). Example: 192.168.0.0/16"
+echo "Confirm/Enter LAN CIDRs behind edge device (multiple allowed). Default: $default_lan_cidr"
 echo "Type 'done' when finished. Empty input is ignored."
 lan_list=()
 while true; do
@@ -51,21 +55,21 @@ while true; do
 done
 
 if [[ "${#lan_list[@]}" -eq 0 ]]; then
-  echo "ERROR: at least one LAN CIDR is required."
-  exit 1
+  lan_list=("$default_lan_cidr")
+  echo "No LAN entered, using default: $default_lan_cidr"
 fi
 
 validate_no_overlap "${lan_list[@]}"
 
 # 4.6 MSS clamp
 echo "MSS Clamp recommended: (GRE_MTU - 40). Example: 1476-40=1436"
-read -r -p "Enter MSS clamp value [1436]: " mss
-mss="${mss:-1436}"
+read -r -p "Confirm/Enter MSS clamp value [${default_mss}]: " mss
+mss="${mss:-$default_mss}"
 validate_int_range "$mss" 536 1460
 
 # v2rayA UI port
-read -r -p "v2rayA GUI port [2017]: " v2raya_port
-v2raya_port="${v2raya_port:-2017}"
+read -r -p "Confirm/Enter v2rayA GUI port [${default_gui_port}]: " v2raya_port
+v2raya_port="${v2raya_port:-$default_gui_port}"
 validate_int_range "$v2raya_port" 1 65535
 
 # Save config
