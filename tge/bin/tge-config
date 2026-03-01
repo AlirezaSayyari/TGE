@@ -97,26 +97,10 @@ read -r -p "Confirm local GRE source IP [${local_ip}]: " gre_local_ip
 gre_local_ip="${gre_local_ip:-$local_ip}"
 validate_ipv4 "$gre_local_ip"
 
-# 4.2 remote GRE IP + ping check
-while true; do
-  read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
-  gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
-  if [[ -z "$gre_remote_ip" ]]; then
-    echo "ERROR: GRE remote IP is required."
-    continue
-  fi
-  if ! validate_ipv4 "$gre_remote_ip" >/dev/null 2>&1; then
-    echo "ERROR: invalid IPv4: $gre_remote_ip"
-    continue
-  fi
-  echo "[wizard] checking connectivity to GRE remote IP: $gre_remote_ip"
-  if ping -c 1 -W 2 "$gre_remote_ip" >/dev/null 2>&1; then
-    echo "[wizard] ping OK: $gre_remote_ip"
-    break
-  fi
-  echo "ERROR: ping failed to $gre_remote_ip"
-  echo "Please check connectivity/routing/firewall, then try again."
-done
+# 4.2 remote GRE IP
+read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
+gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
+validate_ipv4 "$gre_remote_ip"
 
 # 4.3 GRE tunnel IP + confirm
 while true; do
