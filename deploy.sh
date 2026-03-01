@@ -2,6 +2,7 @@
 set -euo pipefail
 
 REPO_RAW="https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main"
+GH_REPO="AlirezaSayyari/V2rayTGE"
 
 INSTALL_DIR="/opt/tge"
 BIN_DIR="/usr/local/bin"
@@ -46,6 +47,39 @@ read_prompt(){
 
   printf -v "$__var_name" '%s' "$__ans"
   return 0
+}
+
+
+discover_cli_metadata(){
+  local rel_json tag branch_guess
+  branch_guess="$(echo "$REPO_RAW" | awk -F'/' '{print $NF}')"
+  [[ -n "$branch_guess" ]] || branch_guess="main"
+
+  # Respect explicit user-provided values
+  if [[ "${TGE_CLI_BRANCH:-}" == "main" && "$branch_guess" != "main" ]]; then
+    TGE_CLI_BRANCH="$branch_guess"
+  fi
+
+  # Auto-detect only when still default-like
+  if [[ "${TGE_CLI_VERSION:-}" != "0.0.0-dev" && "${TGE_CLI_CHANNEL:-}" != "latest" ]]; then
+    return 0
+  fi
+
+  rel_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null || true)"
+  if [[ -n "$rel_json" ]]; then
+    tag="$(echo "$rel_json" | jq -r '.tag_name // empty' 2>/dev/null || true)"
+    if [[ -n "$tag" ]]; then
+      [[ "${TGE_CLI_VERSION:-}" == "0.0.0-dev" ]] && TGE_CLI_VERSION="$tag"
+      [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+      log "[meta] auto-detected version from latest release: $tag"
+      return 0
+    fi
+  fi
+
+  # Fallback channel/version when no release metadata is available
+  [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="latest"
+  [[ "${TGE_CLI_VERSION:-}" == "0.0.0-dev" ]] && TGE_CLI_VERSION="dev-${TGE_CLI_BRANCH}"
+  log "[meta] release metadata not found; using version=$TGE_CLI_VERSION channel=$TGE_CLI_CHANNEL"
 }
 
 # -----------------------------
@@ -486,6 +520,7 @@ main(){
   sed -i 's/\r$//' /opt/v2raytge/docker/docker-compose.yml
   cd /opt/v2raytge/docker
   docker compose up -d
+  discover_cli_metadata
   install_files
 
   start_apt_background_services
