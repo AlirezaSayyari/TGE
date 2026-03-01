@@ -61,7 +61,7 @@ discover_cli_metadata(){
   fi
 
   # Auto-detect only when still default-like
-  if [[ "${TGE_CLI_VERSION:-}" != "0.0.0-dev" && "${TGE_CLI_CHANNEL:-}" != "latest" ]]; then
+  if [[ "${TGE_CLI_VERSION:-}" != "v1.0.0" && "${TGE_CLI_CHANNEL:-}" != "latest" ]]; then
     return 0
   fi
 
@@ -69,7 +69,7 @@ discover_cli_metadata(){
   if [[ -n "$rel_json" ]]; then
     tag="$(echo "$rel_json" | jq -r '.tag_name // empty' 2>/dev/null || true)"
     if [[ -n "$tag" ]]; then
-      [[ "${TGE_CLI_VERSION:-}" == "0.0.0-dev" ]] && TGE_CLI_VERSION="$tag"
+      [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="$tag"
       [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
       log "[meta] auto-detected version from latest release: $tag"
       return 0
@@ -78,7 +78,7 @@ discover_cli_metadata(){
 
   # Fallback channel/version when no release metadata is available
   [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="latest"
-  [[ "${TGE_CLI_VERSION:-}" == "0.0.0-dev" ]] && TGE_CLI_VERSION="dev-${TGE_CLI_BRANCH}"
+  [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="dev-${TGE_CLI_BRANCH}"
   log "[meta] release metadata not found; using version=$TGE_CLI_VERSION channel=$TGE_CLI_CHANNEL"
 }
 
