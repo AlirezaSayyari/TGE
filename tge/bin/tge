@@ -8,12 +8,16 @@ META_FILE="$ETC_DIR/meta.env"
 
 mkdir -p "$ETC_DIR" "$LOG_DIR"
 
+CLI_VERSION="${TGE_CLI_VERSION:-0.0.0-dev}"
+CLI_BRANCH="${TGE_CLI_BRANCH:-main}"
+CLI_CHANNEL="${TGE_CLI_CHANNEL:-latest}"
 LAST_ERROR=""
 
 menu() {
   clear
   echo "============================================================"
   echo " V2rayTGE - Traffic Gateway Egress (CLI)"
+  echo " Version: ${CLI_VERSION} | Branch: ${CLI_BRANCH} | Channel: ${CLI_CHANNEL}"
   echo "============================================================"
   if [[ -n "$LAST_ERROR" ]]; then
     echo "------------------------ Last Error ------------------------"
