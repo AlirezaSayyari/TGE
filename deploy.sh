@@ -31,6 +31,23 @@ need_root(){
 
 have_cmd(){ command -v "$1" >/dev/null 2>&1; }
 
+read_prompt(){
+  local __var_name="$1"; shift
+  local __prompt="$*"
+  local __ans=""
+
+  if [[ -r /dev/tty ]]; then
+    read -r -p "$__prompt" __ans < /dev/tty || true
+  elif [[ -t 0 ]]; then
+    read -r -p "$__prompt" __ans || true
+  else
+    return 1
+  fi
+
+  printf -v "$__var_name" '%s' "$__ans"
+  return 0
+}
+
 # -----------------------------
 # APT LOCK HANDLING (safe)
 # -----------------------------
@@ -274,9 +291,9 @@ enforce_legacy_firewall_backend(){
   echo "  optional: iptables-save/restore and ip6tables-save/restore -> legacy targets"
 
   if [[ "${TGE_ASSUME_YES:-0}" != "1" ]]; then
-    if [[ -t 0 ]]; then
+    if [[ -r /dev/tty || -t 0 ]]; then
       local confirm
-      read -r -p "[firewall] Switch backend to legacy now (recommended)? [Y/n]: " confirm || true
+      read_prompt confirm "[firewall] Switch backend to legacy now (recommended)? [Y/n]: " || true
       confirm="${confirm:-Y}"
       if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
         warn "[firewall] switch canceled by user."
@@ -343,8 +360,8 @@ prompt_reboot_after_backend_switch(){
   warn "After reboot, run this command again:"
   warn "curl -fsSL $REPO_RAW/deploy.sh | sudo bash"
   local ans="n"
-  if [[ -t 0 ]]; then
-    read -r -p "Reboot now? [y/N]: " ans || true
+  if [[ -r /dev/tty || -t 0 ]]; then
+    read_prompt ans "Reboot now? [y/N]: " || true
   else
     warn "No interactive TTY detected. Reboot was not triggered automatically."
   fi

@@ -254,6 +254,23 @@ Backend mode knob:
 
 If you explicitly choose nft mode, V2rayTGE will not force backend alternatives and will continue with warnings.
 
+### Interactive legacy-switch flow during install
+
+When mode is `legacy` and backend is not legacy, deploy script now does this:
+
+1. Prints the exact commands it will apply.
+2. Asks for confirmation before switching alternatives.
+3. Applies switch and verifies backend.
+4. Asks for reboot confirmation.
+5. Shows command to run after reboot:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main/deploy.sh | sudo bash
+```
+
+> Prompt input is read from `/dev/tty`, so confirmations still work with `curl ... | sudo bash`.
+
+
 ## Troubleshooting: traffic not passing after install
 
 1. Check backend:
@@ -276,13 +293,19 @@ sudo update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy
 sudo systemctl restart docker
 ```
 
-4. Re-apply TGE rules/services:
+4. Reboot if backend was switched, then rerun deploy:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main/deploy.sh | sudo bash
+```
+
+5. Re-apply TGE rules/services:
 
 ```bash
 sudo systemctl restart tge-apply.service
 ```
 
-5. Verify health and rules:
+6. Verify health and rules:
 
 ```bash
 sudo tge-health
