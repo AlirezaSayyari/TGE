@@ -262,10 +262,16 @@ enforce_legacy_firewall_backend(){
   fi
 
   if nft_ruleset_nonempty; then
-    err "[firewall] active nft ruleset detected; refusing risky auto-switch."
-    print_legacy_backend_instructions
-    return 61
+    warn "[firewall] active nft ruleset detected."
+    warn "[firewall] Switching to legacy is still possible, but reboot is required after apply."
   fi
+
+  echo "[firewall] Commands to apply:"
+  echo "  update-alternatives --set iptables /usr/sbin/iptables-legacy"
+  if have_cmd ip6tables; then
+    echo "  update-alternatives --set ip6tables /usr/sbin/ip6tables-legacy"
+  fi
+  echo "  optional: iptables-save/restore and ip6tables-save/restore -> legacy targets"
 
   if [[ "${TGE_ASSUME_YES:-0}" != "1" ]]; then
     if [[ -t 0 ]]; then
@@ -334,8 +340,8 @@ prompt_reboot_after_backend_switch(){
 
   echo
   warn "[firewall] backend was changed to legacy. Reboot is required before continuing install."
-  warn "After reboot, run the same install command again."
-
+  warn "After reboot, run this command again:"
+  warn "curl -fsSL $REPO_RAW/deploy.sh | sudo bash"
   local ans="n"
   if [[ -t 0 ]]; then
     read -r -p "Reboot now? [y/N]: " ans || true
@@ -347,9 +353,10 @@ prompt_reboot_after_backend_switch(){
     log "Rebooting now..."
     reboot
   else
-    warn "Please reboot the server now, then run the install command again."
-  fi
+    warn "Please reboot the server now."
+    warn "After server is up, run: curl -fsSL $REPO_RAW/deploy.sh | sudo bash"
 
+  fi
   exit 0
 }
 # -----------------------------
