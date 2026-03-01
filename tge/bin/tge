@@ -64,7 +64,17 @@ Prerequisites
 
 v2rayA GUI
 - Default GUI: http://<EgressGW-IP>:2017
-- In v2rayA, configure an outbound (VLESS/VMess/...) and enable TUN mode so tun0 is ready.
+- If tun0 is missing, follow these steps in v2rayA:
+  1) Import Connection Config/Subscription
+  2) From Right-Above Dashboard click Setting
+  3) Set Transparent Proxy/System Proxy --> On: Do Not Split Traffic
+  4) Set Transpatent Proxy/System Proxy Implementation --> system tun
+  5) Set Prevent DNS Spoofing --> Forward DNS Request
+  6) (optional) Set Automatically Update Subscriptions --> Update When Service Start
+  7) Click Save and Apply
+  8) In Dashboard click [Select] on desired connection
+  9) From Left-Above Dashboard click Ready/Start
+  10) Return to server CLI and continue setup wizard
 
 MTU/MSS note (important)
 - If ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
@@ -122,7 +132,11 @@ deactivate() {
 
 config_wizard() {
   require_root || return 0
-  run_and_capture_error "Config Wizard" /usr/local/sbin/tge-config || true
+  if ! /usr/local/sbin/tge-config; then
+    LAST_ERROR="[Config Wizard] failed (see output above)"
+  else
+    LAST_ERROR=""
+  fi
   echo "Press Enter..."
   read -r
 }

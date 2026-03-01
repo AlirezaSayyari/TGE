@@ -145,9 +145,9 @@ At the end it:
 
 * saves config to `/opt/v2raytge/config.env`
 * prints the **edge device** tunnel + routing requirements
-* checks whether `tun0` exists:
+* Step 0 checks whether `tun0` exists and guides v2rayA setup if missing:
 
-  * if `tun0` is missing, it will not fail—apply is deferred and auto-runs when `tun0` appears
+  * if `tun0` is missing, wizard shows full v2rayA steps and asks re-check before continuing
 * asks if you want to activate immediately
 
 ---
@@ -162,11 +162,20 @@ Default GUI:
 http://<EgressGW-IP>:2017
 ```
 
-In v2rayA:
+In v2rayA (Step 0 guide used by wizard):
 
-1. Add your outbound (VLESS/VMess/…)
-2. Enable it so `tun0` becomes available
-3. V2rayTGE services will then apply routing/firewall rules automatically
+1. Open V2rayA GUI: `http://<EgressGW-IP>:2017`
+2. Import Connection Config/Subscription
+3. From Right-Above Dashboard click Setting
+4. Set Transparent Proxy/System Proxy -> On: Do Not Split Traffic
+5. Set Transpatent Proxy/System Proxy Implementation -> system tun
+6. Set Prevent DNS Spoofing -> Forward DNS Request
+7. (optional) Set Automatically Update Subscriptions -> Update When Service Start
+8. Click Save and Apply
+9. In Dashboard click [Select] on desired connection
+10. From Left-Above Dashboard click Ready/Start
+11. Return to server CLI and continue setup wizard
+12. V2rayTGE services then apply routing/firewall rules automatically
 
 ---
 

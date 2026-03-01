@@ -10,8 +10,79 @@ mkdir -p "$ETC_DIR"
 need_root
 default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
 
+preview_nic="$(guess_primary_nic)"
+[[ -n "$preview_nic" ]] || preview_nic="eth0"
+preview_ip="$(iface_ipv4 "$preview_nic" || true)"
+[[ -n "$preview_ip" ]] || preview_ip="<VM_IP>"
+
+tun0_precheck_or_guide(){
+  if ip link show tun0 >/dev/null 2>&1; then
+    echo "[wizard] tun0 is already present."
+    return 0
+  fi
+
+  echo
+  echo "[wizard] Step 0: tun0 is not present yet."
+  echo "Please complete v2rayA setup, then come back here."
+  echo "- open V2rayA GUI (http://${preview_ip}:${default_gui_port})"
+  echo "- Import Connection Config/Subscription"
+  echo "- From Right-Above Dashboard Click Setting"
+  echo "- Set Transparent Proxy/System Proxy --> On: Do Not Split Traffic"
+  echo "- Set Transpatent Proxy/System Proxy Implementation --> system tun"
+  echo "- Set Prevent DNS Spoofing --> Forward DNS Request"
+  echo "- (optional) Set Automatically Update Subscriptions --> Update When Service Start"
+  echo "- Click On Save and Apply"
+  echo "- In Dashboard Click On [Select] Button of Desire Connection"
+  echo "- From Left-Above Dashboard Click On Ready/Start Button"
+  echo "- then came back to server cli and continue setup wizard"
+  echo
+
+  while true; do
+    local act
+    read -r -p "Type 'check' to re-check tun0, or 'skip' to continue anyway [check/skip]: " act
+    act="${act:-check}"
+    case "$act" in
+      check|CHECK)
+        if ip link show tun0 >/dev/null 2>&1; then
+          echo "[wizard] tun0 detected. Continue."
+          return 0
+        fi
+        echo "[wizard] tun0 still missing. Complete v2rayA steps and try again."
+        ;;
+      skip|SKIP)
+        echo "[wizard][WARN] continuing while tun0 is missing."
+        return 0
+        ;;
+      *)
+        echo "[wizard] invalid choice. use: check or skip"
+        ;;
+    esac
+  done
+}
+
+calc_peer_ip(){
+  python3 - "$1" <<'PY'
+import ipaddress, sys
+n = ipaddress.ip_network(sys.argv[1], strict=False)
+if n.version != 4 or n.prefixlen != 30:
+    print("")
+    raise SystemExit(0)
+hosts = list(n.hosts())
+cur = ipaddress.ip_interface(sys.argv[1]).ip
+if cur not in hosts:
+    print("")
+    raise SystemExit(0)
+peer = hosts[0] if hosts[1] == cur else hosts[1]
+print(str(peer))
+PY
+}
+
 
 echo "=== V2rayTGE Config Wizard ==="
+
+# Step 0: tun0 readiness
+tun0_precheck_or_guide
+
 
 # 4.1 NIC selection
 guess_nic="$(guess_primary_nic)"
@@ -26,15 +97,47 @@ read -r -p "Confirm local GRE source IP [${local_ip}]: " gre_local_ip
 gre_local_ip="${gre_local_ip:-$local_ip}"
 validate_ipv4 "$gre_local_ip"
 
-# 4.2 remote GRE IP
-read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
-gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
-validate_ipv4 "$gre_remote_ip"
+# 4.2 remote GRE IP + ping check
+while true; do
+  read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
+  gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
+  if [[ -z "$gre_remote_ip" ]]; then
+    echo "ERROR: GRE remote IP is required."
+    continue
+  fi
+  if ! validate_ipv4 "$gre_remote_ip" >/dev/null 2>&1; then
+    echo "ERROR: invalid IPv4: $gre_remote_ip"
+    continue
+  fi
+  echo "[wizard] checking connectivity to GRE remote IP: $gre_remote_ip"
+  if ping -c 1 -W 2 "$gre_remote_ip" >/dev/null 2>&1; then
+    echo "[wizard] ping OK: $gre_remote_ip"
+    break
+  fi
+  echo "ERROR: ping failed to $gre_remote_ip"
+  echo "Please check connectivity/routing/firewall, then try again."
+done
 
-# 4.3 GRE tunnel IP (e.g. 10.255.255.2/30)
-read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
-gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
-validate_cidr "$gre_tun_ip"
+# 4.3 GRE tunnel IP + confirm
+while true; do
+  read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
+  gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
+  if ! validate_cidr "$gre_tun_ip" >/dev/null 2>&1; then
+    echo "ERROR: invalid CIDR: $gre_tun_ip"
+    continue
+  fi
+  tun_subnet="$(cidr_network "$gre_tun_ip")"
+  peer_ip="$(calc_peer_ip "$gre_tun_ip" || true)"
+  echo "[wizard] tunnel subnet: $tun_subnet"
+  if [[ -n "$peer_ip" ]]; then
+    echo "[wizard] suggested edge tunnel IP: $peer_ip"
+  else
+    echo "[wizard] note: /30 is recommended for GRE point-to-point tunnel IPs."
+  fi
+  read -r -p "Confirm this GRE tunnel IP/CIDR? [Y/n]: " tun_confirm
+  tun_confirm="${tun_confirm:-Y}"
+  [[ "$tun_confirm" =~ ^[Yy]$ ]] && break
+done
 
 # GRE MTU
 read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
