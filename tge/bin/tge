@@ -8,16 +8,22 @@ META_FILE="$ETC_DIR/meta.env"
 
 mkdir -p "$ETC_DIR" "$LOG_DIR"
 
+if [[ -r "$META_FILE" ]]; then
+  # shellcheck disable=SC1090
+  . "$META_FILE"
+fi
+
 CLI_VERSION="${TGE_CLI_VERSION:-v1.0.0}"
 CLI_BRANCH="${TGE_CLI_BRANCH:-main}"
 CLI_CHANNEL="${TGE_CLI_CHANNEL:-latest}"
+CLI_CODE="${TGE_CLI_CODE:-unknown}"
 LAST_ERROR=""
 
 menu() {
   clear
   echo "============================================================"
   echo " V2rayTGE - Traffic Gateway Egress (CLI)"
-  echo " Version: ${CLI_VERSION} | Branch: ${CLI_BRANCH} | Channel: ${CLI_CHANNEL}"
+  echo " Version: ${CLI_VERSION} | Code: ${CLI_CODE} | Branch: ${CLI_BRANCH} | Channel: ${CLI_CHANNEL}"
   echo "============================================================"
   if [[ -n "$LAST_ERROR" ]]; then
     echo "------------------------ Last Error ------------------------"

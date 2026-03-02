@@ -3,9 +3,15 @@ set -euo pipefail
 
 ETC_DIR="/opt/v2raytge"
 CFG="$ETC_DIR/config.env"
+META_FILE="$ETC_DIR/meta.env"
 mkdir -p "$ETC_DIR"
 
 . "$ETC_DIR/tge-lib.sh"
+
+if [[ -r "$META_FILE" ]]; then
+  # shellcheck disable=SC1090
+  . "$META_FILE"
+fi
 
 need_root
 default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
@@ -79,6 +85,7 @@ PY
 
 
 echo "=== V2rayTGE Config Wizard ==="
+echo "Version: ${TGE_CLI_VERSION:-v1.0.0} | Code: ${TGE_CLI_CODE:-unknown} | Branch: ${TGE_CLI_BRANCH:-main} | Channel: ${TGE_CLI_CHANNEL:-latest}"
 
 # Step 0: tun0 readiness
 tun0_precheck_or_guide
