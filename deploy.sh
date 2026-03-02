@@ -16,6 +16,7 @@ TGE_FIREWALL_BACKEND="${TGE_FIREWALL_BACKEND:-legacy}"
 TGE_CLI_VERSION="${TGE_CLI_VERSION:-v1.0.0}"
 TGE_CLI_BRANCH="${TGE_CLI_BRANCH:-main}"
 TGE_CLI_CHANNEL="${TGE_CLI_CHANNEL:-latest}"
+TGE_CLI_CODE="${TGE_CLI_CODE:-unknown}"
 FIREWALL_SWITCHED=0
 
 
@@ -51,7 +52,7 @@ read_prompt(){
 
 
 discover_cli_metadata(){
-  local rel_json tag branch_guess
+  local rel_json tag branch_guess commit_json sha short_sha
   branch_guess="$(echo "$REPO_RAW" | awk -F'/' '{print $NF}')"
   [[ -n "$branch_guess" ]] || branch_guess="main"
 
@@ -61,25 +62,33 @@ discover_cli_metadata(){
   fi
 
   # Auto-detect only when still default-like
-  if [[ "${TGE_CLI_VERSION:-}" != "v1.0.0" && "${TGE_CLI_CHANNEL:-}" != "latest" ]]; then
-    return 0
-  fi
-
-  rel_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null || true)"
-  if [[ -n "$rel_json" ]]; then
-    tag="$(echo "$rel_json" | jq -r '.tag_name // empty' 2>/dev/null || true)"
-    if [[ -n "$tag" ]]; then
-      [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="$tag"
-      [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
-      log "[meta] auto-detected version from latest release: $tag"
-      return 0
+  if [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" || "${TGE_CLI_CHANNEL:-}" == "latest" ]]; then
+    rel_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null || true)"
+    if [[ -n "$rel_json" ]]; then
+      tag="$(echo "$rel_json" | jq -r '.tag_name // empty' 2>/dev/null || true)"
+      if [[ -n "$tag" ]]; then
+        [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="$tag"
+        [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+        log "[meta] auto-detected version from latest release: $tag"
+      fi
     fi
   fi
 
-  # Fallback channel/version when no release metadata is available
-  [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="latest"
-  [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="dev-${TGE_CLI_BRANCH}"
-  log "[meta] release metadata not found; using version=$TGE_CLI_VERSION channel=$TGE_CLI_CHANNEL"
+  # Fallback channel/version when release metadata is unavailable
+  if [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]]; then
+    TGE_CLI_VERSION="dev-${TGE_CLI_BRANCH}"
+    log "[meta] release metadata not found; using version=$TGE_CLI_VERSION channel=$TGE_CLI_CHANNEL"
+  fi
+
+  if [[ "${TGE_CLI_CODE:-}" == "unknown" ]]; then
+    commit_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/commits/${TGE_CLI_BRANCH}" 2>/dev/null || true)"
+    sha="$(echo "$commit_json" | jq -r '.sha // empty' 2>/dev/null || true)"
+    short_sha="${sha:0:7}"
+    if [[ -n "$short_sha" ]]; then
+      TGE_CLI_CODE="$short_sha"
+      log "[meta] detected commit code for branch ${TGE_CLI_BRANCH}: $TGE_CLI_CODE"
+    fi
+  fi
 }
 
 # -----------------------------
@@ -450,10 +459,11 @@ install_files(){
   install -m 0755 /opt/tge/bin/tge-health     /usr/local/sbin/tge-health
   install -m 0755 /opt/tge/bin/tge-logs       /usr/local/sbin/tge-logs
   install -m 0644 /opt/tge/bin/tge-lib.sh /opt/v2raytge/tge-lib.sh
-  cat > /opt/v2raytge/meta.env <<EOF
+cat > /opt/v2raytge/meta.env <<EOF
 TGE_CLI_VERSION="$TGE_CLI_VERSION"
 TGE_CLI_BRANCH="$TGE_CLI_BRANCH"
 TGE_CLI_CHANNEL="$TGE_CLI_CHANNEL"
+TGE_CLI_CODE="$TGE_CLI_CODE"
 EOF
   chmod 0644 /opt/v2raytge/meta.env
   install -m 0644 /opt/tge/systemd/tge-gre.service   /etc/systemd/system/tge-gre.service
