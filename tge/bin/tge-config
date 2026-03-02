@@ -84,8 +84,7 @@ PY
 }
 
 
-echo "=== V2rayTGE Config Wizard ==="
-echo "Version: ${TGE_CLI_VERSION:-v1.0.0} | Code: ${TGE_CLI_CODE:-unknown} | Branch: ${TGE_CLI_BRANCH:-main} | Channel: ${TGE_CLI_CHANNEL:-latest}"
+echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 
 # Step 0: tun0 readiness
 tun0_precheck_or_guide
