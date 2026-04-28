@@ -4,11 +4,15 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue?style=for-the-badge)
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
 
-# V2rayTGE (Traffic Gateway Egress) — Production-Safe GRE → v2rayA Egress Gateway
+# V2rayTGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA Egress Gateway
 
 V2rayTGE is a **production-safe** installer + CLI toolkit that turns an Ubuntu server into an **Egress Gateway**.
-It receives traffic from your LAN via a **GRE tunnel** (from an edge device such as FortiGate / Router / Firewall / …)
+It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
 and forwards it to the Internet through **v2rayA** by policy-routing to `tun0` (created by v2rayA running in Docker).
+
+Supported edge modes:
+- **GRE mode**: the previous design, where the edge device sends LAN traffic through a GRE tunnel.
+- **Direct mode**: the VM operational NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -22,17 +26,32 @@ This project is designed for real production environments:
 ## Architecture
 
 ### Interfaces on EgressGW
-- `ensXXX` : Primary NIC (management + default route stays here)
-- `gre-egress` : GRE tunnel interface (to your edge device)
+- Management NIC: SSH and v2rayA GUI access; the host default route normally stays here.
+- Operational NIC: connected toward the edge device and used for traffic operations.
+- `gre-egress`: GRE tunnel interface, only in GRE mode.
 - `tun0` : created by v2rayA (Docker host networking)
 
 ### Traffic Flow
+
+GRE mode:
 
 LAN (one or multiple CIDRs)
 ↓
 Edge Device (any vendor)
 ↓  GRE tunnel
 EgressGW (gre-egress)
+↓  Policy Routing (table: v2ray)
+tun0 (v2rayA)
+↓
+Internet
+
+Direct mode:
+
+LAN (one or multiple CIDRs)
+↓
+Edge Device (any vendor)
+↓  Direct L2/L3 path
+EgressGW operational NIC
 ↓  Policy Routing (table: v2ray)
 tun0 (v2rayA)
 ↓
@@ -63,18 +82,18 @@ After install:
 Your server keeps its default route on `ensXXX`.  
 V2rayTGE only:
 - ensures a separate routing table (`v2ray`)
-- ensures policy rules for traffic entering via `gre-egress`
+- ensures policy rules for traffic entering via the selected edge interface
 
 ### 2) Policy Routing Rules
 V2rayTGE ensures these rules exist (and does not delete/flush others):
-- `pref 100`: traffic **incoming on `gre-egress`** → `lookup v2ray`
+- `pref 100`: traffic **incoming on selected edge interface** → `lookup v2ray`
 - `pref 110`: helper rule for traffic involving `tun0` → `lookup v2ray`
-- `pref 101`: keep GRE subnet stable in `main` (stability helper)
+- `pref 101`: keep GRE subnet stable in `main` (GRE mode only)
 
 ### 3) Forwarding + NAT
-To let LAN subnets behind GRE reach the Internet via `tun0`:
-- FORWARD: allow `gre-egress → tun0`
-- FORWARD: allow return `tun0 → gre-egress` for `RELATED,ESTABLISHED`
+To let LAN subnets behind the edge device reach the Internet via `tun0`:
+- FORWARD: allow selected edge interface → `tun0`
+- FORWARD: allow return `tun0` → selected edge interface for `RELATED,ESTABLISHED`
 - NAT: `MASQUERADE` LAN CIDRs out of `tun0`
 
 ### 4) MSS Clamp (fix “ping works but HTTPS/TLS hangs”)
@@ -93,6 +112,8 @@ Defaults:
 - `GRE MTU = 1476`
 - `MSS Clamp = 1436` (≈ MTU - 40)
 
+Direct mode skips GRE MTU and MSS clamp configuration.
+
 ---
 
 ## Requirements
@@ -101,11 +122,14 @@ Defaults:
 - Ubuntu Server
 - Docker + v2rayA (we deploy docker-compose)
 - root access (systemd + iptables ensure)
+- Two VM NICs are recommended:
+  - management NIC for SSH/v2rayA GUI
+  - operational NIC for edge traffic
 
 ### On the Edge Device (Any Vendor)
-You must configure:
-1) A GRE tunnel towards the EgressGW (wizard prints parameters)
-2) Route or PBR so your LAN CIDRs are sent into the GRE tunnel
+You must configure one of these modes:
+1. **GRE mode**: create a GRE tunnel towards the EgressGW operational NIC IP, then route/PBR LAN CIDRs into the GRE tunnel.
+2. **Direct mode**: route/PBR LAN CIDRs directly toward the EgressGW operational NIC.
 
 V2rayTGE is **vendor-neutral** and does not assume FortiGate.
 
@@ -134,11 +158,12 @@ Menu:
 
 The wizard asks you step-by-step:
 
-* primary NIC selection (used to discover local server IP)
-* GRE remote IP (edge device IP)
-* GRE tunnel IP/CIDR for the server (example: `10.255.255.2/30`)
+* management NIC selection for SSH/v2rayA GUI
+* operational NIC selection for edge traffic
+* edge mode: `gre` or `direct`
+* GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
 * one or more LAN CIDRs (validated: correct format, no duplicates, no overlap)
-* MSS clamp (validated range)
+* MSS clamp only when GRE mode is selected
 * v2rayA GUI port (default 2017)
 
 At the end it:
@@ -193,7 +218,7 @@ Activate does:
 
 * runs firewall backend preflight (`legacy` by default)
 * starts v2rayA via docker compose
-* enables systemd units (GRE ensure + apply + path + timer)
+* enables systemd units (GRE ensure only in GRE mode, plus apply + path + timer)
 * runs an immediate safe ensure pass
 
 ### Deactivate
@@ -214,9 +239,9 @@ Deactivate is safe:
 Installed units:
 
 * `tge-gre.service`
-  Ensures GRE tunnel exists (**idempotent, no delete**)
+  Ensures GRE tunnel exists in GRE mode; no-op in direct mode (**idempotent, no delete**)
 * `tge-apply.service`
-  Ensures policy routing + iptables + MSS fix (**no flush**)
+  Ensures policy routing + iptables, plus GRE MSS fix when applicable (**no flush**)
 * `tge-apply.path`
   Triggers apply when `tun0` appears
 * `tge-apply.timer`
@@ -238,11 +263,11 @@ sudo tge-health
 
 Checks:
 
-* `gre-egress` exists
+* selected edge interface exists (`gre-egress` in GRE mode, operational NIC in direct mode)
 * `tun0` exists
 * required `ip rule` entries exist
 * `v2ray` table routes exist
-* MSS clamp rule exists
+* MSS clamp rule exists in GRE mode; skipped in direct mode
 * optional quick curl test from the gateway
 
 ---
@@ -356,5 +381,4 @@ sudo rm -f /usr/local/sbin/tge /usr/local/sbin/tge-*
 sudo rm -f /etc/systemd/system/tge-*.service /etc/systemd/system/tge-*.timer /etc/systemd/system/tge-*.path
 sudo systemctl daemon-reload
 ```
-
 

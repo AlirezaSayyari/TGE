@@ -14,7 +14,7 @@ if [[ -r "$META_FILE" ]]; then
 fi
 
 need_root
-default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
+default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_mgmt_nic="${MGMT_NIC:-}"; default_ops_nic="${OPS_NIC:-${PRIMARY_NIC:-}}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
 
 preview_nic="$(guess_primary_nic)"
 [[ -n "$preview_nic" ]] || preview_nic="eth0"
@@ -90,49 +90,77 @@ echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 tun0_precheck_or_guide
 
 
-# 4.1 NIC selection
+# 4.1 NIC and edge-mode selection
 guess_nic="$(guess_primary_nic)"
-echo "Detected primary NIC: $guess_nic"
-read -r -p "Confirm primary NIC for server (local GRE source) [${guess_nic}]: " nic
-nic="${nic:-$guess_nic}"
-validate_iface_exists "$nic"
+echo "Detected default-route NIC: $guess_nic"
+read -r -p "Confirm management NIC for SSH/v2rayA GUI [${default_mgmt_nic:-$guess_nic}]: " mgmt_nic
+mgmt_nic="${mgmt_nic:-${default_mgmt_nic:-$guess_nic}}"
+validate_iface_exists "$mgmt_nic"
 
-local_ip="$(iface_ipv4 "$nic")"
-echo "Local IPv4 on $nic: $local_ip"
-read -r -p "Confirm local GRE source IP [${local_ip}]: " gre_local_ip
-gre_local_ip="${gre_local_ip:-$local_ip}"
-validate_ipv4 "$gre_local_ip"
+read -r -p "Confirm operational NIC for edge traffic [${default_ops_nic:-$guess_nic}]: " ops_nic
+ops_nic="${ops_nic:-${default_ops_nic:-$guess_nic}}"
+validate_iface_exists "$ops_nic"
 
-# 4.2 remote GRE IP
-read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
-gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
-validate_ipv4 "$gre_remote_ip"
+mgmt_ip="$(iface_ipv4 "$mgmt_nic")"
+ops_ip="$(iface_ipv4 "$ops_nic")"
+echo "Management IPv4 on $mgmt_nic: ${mgmt_ip:-<none>}"
+echo "Operational IPv4 on $ops_nic: ${ops_ip:-<none>}"
 
-# 4.3 GRE tunnel IP + confirm
 while true; do
-  read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
-  gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
-  if ! validate_cidr "$gre_tun_ip" >/dev/null 2>&1; then
-    echo "ERROR: invalid CIDR: $gre_tun_ip"
-    continue
-  fi
-  tun_subnet="$(cidr_network "$gre_tun_ip")"
-  peer_ip="$(calc_peer_ip "$gre_tun_ip" || true)"
-  echo "[wizard] tunnel subnet: $tun_subnet"
-  if [[ -n "$peer_ip" ]]; then
-    echo "[wizard] suggested edge tunnel IP: $peer_ip"
-  else
-    echo "[wizard] note: /30 is recommended for GRE point-to-point tunnel IPs."
-  fi
-  read -r -p "Confirm this GRE tunnel IP/CIDR? [Y/n]: " tun_confirm
-  tun_confirm="${tun_confirm:-Y}"
-  [[ "$tun_confirm" =~ ^[Yy]$ ]] && break
+  read -r -p "Edge mode: use GRE tunnel or direct operational NIC? [${default_edge_mode}] (gre/direct): " edge_mode
+  edge_mode="${edge_mode:-$default_edge_mode}"
+  edge_mode="$(echo "$edge_mode" | tr '[:upper:]' '[:lower:]')"
+  case "$edge_mode" in
+    gre|direct) break ;;
+    *) echo "ERROR: invalid edge mode. use: gre or direct" ;;
+  esac
 done
 
-# GRE MTU
-read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
-gre_mtu="${gre_mtu:-$default_gre_mtu}"
-validate_int_range "$gre_mtu" 1200 9000
+gre_local_ip=""
+gre_remote_ip=""
+gre_tun_ip=""
+gre_mtu=""
+mss=""
+
+if [[ "$edge_mode" == "gre" ]]; then
+  local_ip="$ops_ip"
+  [[ -n "$local_ip" ]] || { echo "ERROR: operational NIC has no IPv4 address: $ops_nic"; exit 1; }
+  echo "Local IPv4 on $ops_nic: $local_ip"
+  read -r -p "Confirm local GRE source IP [${local_ip}]: " gre_local_ip
+  gre_local_ip="${gre_local_ip:-$local_ip}"
+  validate_ipv4 "$gre_local_ip"
+
+  # 4.2 remote GRE IP
+  read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
+  gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
+  validate_ipv4 "$gre_remote_ip"
+
+  # 4.3 GRE tunnel IP + confirm
+  while true; do
+    read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
+    gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
+    if ! validate_cidr "$gre_tun_ip" >/dev/null 2>&1; then
+      echo "ERROR: invalid CIDR: $gre_tun_ip"
+      continue
+    fi
+    tun_subnet="$(cidr_network "$gre_tun_ip")"
+    peer_ip="$(calc_peer_ip "$gre_tun_ip" || true)"
+    echo "[wizard] tunnel subnet: $tun_subnet"
+    if [[ -n "$peer_ip" ]]; then
+      echo "[wizard] suggested edge tunnel IP: $peer_ip"
+    else
+      echo "[wizard] note: /30 is recommended for GRE point-to-point tunnel IPs."
+    fi
+    read -r -p "Confirm this GRE tunnel IP/CIDR? [Y/n]: " tun_confirm
+    tun_confirm="${tun_confirm:-Y}"
+    [[ "$tun_confirm" =~ ^[Yy]$ ]] && break
+  done
+
+  # GRE MTU
+  read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
+  gre_mtu="${gre_mtu:-$default_gre_mtu}"
+  validate_int_range "$gre_mtu" 1200 9000
+fi
 
 # 4.4 LAN CIDRs (multiple)
 echo "Confirm/Enter LAN CIDRs behind edge device (multiple allowed). Default: $default_lan_cidr"
@@ -154,11 +182,13 @@ fi
 
 validate_no_overlap "${lan_list[@]}"
 
-# 4.6 MSS clamp
-echo "MSS Clamp recommended: (GRE_MTU - 40). Example: 1476-40=1436"
-read -r -p "Confirm/Enter MSS clamp value [${default_mss}]: " mss
-mss="${mss:-$default_mss}"
-validate_int_range "$mss" 536 1460
+if [[ "$edge_mode" == "gre" ]]; then
+  # 4.6 MSS clamp
+  echo "MSS Clamp recommended: (GRE_MTU - 40). Example: 1476-40=1436"
+  read -r -p "Confirm/Enter MSS clamp value [${default_mss}]: " mss
+  mss="${mss:-$default_mss}"
+  validate_int_range "$mss" 536 1460
+fi
 
 # v2rayA UI port
 read -r -p "Confirm/Enter v2rayA GUI port [${default_gui_port}]: " v2raya_port
@@ -168,7 +198,10 @@ validate_int_range "$v2raya_port" 1 65535
 # Save config
 cat > "$CFG" <<EOF
 # V2rayTGE configuration
-PRIMARY_NIC="$nic"
+TGE_EDGE_MODE="$edge_mode"
+MGMT_NIC="$mgmt_nic"
+OPS_NIC="$ops_nic"
+PRIMARY_NIC="$ops_nic"
 GRE_IF="gre-egress"
 GRE_LOCAL_IP="$gre_local_ip"
 GRE_REMOTE_IP="$gre_remote_ip"
@@ -189,18 +222,29 @@ echo
 
 # Print edge-device instructions
 echo "=== Edge Device (Remote) Requirements ==="
-echo "- Create GRE tunnel:"
-echo "  Local IP (edge):    <edge device IP>"
-echo "  Remote IP (server): $gre_local_ip"
-echo "  Tunnel endpoints:   server=$gre_tun_ip  <-> edge=<choose complementary IP in same /30>"
-echo "  MTU:                $gre_mtu"
-echo
+if [[ "$edge_mode" == "gre" ]]; then
+  echo "- Create GRE tunnel:"
+  echo "  Local IP (edge):    <edge device IP>"
+  echo "  Remote IP (server): $gre_local_ip"
+  echo "  Tunnel endpoints:   server=$gre_tun_ip  <-> edge=<choose complementary IP in same /30>"
+  echo "  MTU:                $gre_mtu"
+  echo
+else
+  echo "- Connect the edge device directly to the VM operational NIC:"
+  echo "  VM operational NIC: $ops_nic (${ops_ip:-no IPv4 detected})"
+  echo "  No GRE tunnel, GRE MTU, or MSS clamp is configured in this mode."
+  echo
+fi
 echo "- Policy Based Routing / Static route:"
-echo "  Send LAN CIDRs via GRE tunnel interface:"
+if [[ "$edge_mode" == "gre" ]]; then
+  echo "  Send LAN CIDRs via GRE tunnel interface:"
+else
+  echo "  Send LAN CIDRs via the directly connected operational interface:"
+fi
 for c in "${lan_list[@]}"; do echo "   - $c"; done
 echo
 echo "=== v2rayA GUI ==="
-echo "Open: http://$gre_local_ip:$v2raya_port  (or server main IP)"
+echo "Open: http://${mgmt_ip:-$preview_ip}:$v2raya_port  (management IP)"
 echo "Configure outbound and enable."
 echo
 
@@ -218,4 +262,3 @@ if [[ "$ans" =~ ^[Yy]$ ]]; then
   /usr/local/sbin/tge-ctl --activate
   /usr/local/sbin/tge-health || true
 fi
-

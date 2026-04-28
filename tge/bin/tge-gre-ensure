@@ -9,8 +9,19 @@ need_root
 . "$CFG"
 
 GRE_IF="${GRE_IF:-gre-egress}"
+TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 
 log(){ echo "[tge-gre] $*"; }
+
+if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
+  log "direct mode selected; GRE tunnel is not required."
+  exit 0
+fi
+
+if [[ "$TGE_EDGE_MODE" != "gre" ]]; then
+  log "ERROR: invalid TGE_EDGE_MODE=$TGE_EDGE_MODE (use: gre|direct)."
+  exit 2
+fi
 
 if ip link show "$GRE_IF" >/dev/null 2>&1; then
   # validate tunnel params best-effort
