@@ -43,13 +43,16 @@ help_intro() {
   cat <<'EOF'
 What is V2rayTGE?
 - A production-safe egress gateway that forwards LAN traffic to the Internet through v2rayA (tun0).
-- Traffic path: LAN -> Edge Device (Forti/Router/...) -> GRE -> EgressGW -> policy routing (table v2ray) -> tun0 -> Internet
+- Supported traffic paths:
+  - GRE mode: LAN -> Edge Device (Forti/Router/...) -> GRE -> EgressGW -> policy routing (table v2ray) -> tun0 -> Internet
+  - Direct mode: LAN -> Edge Device -> VM operational NIC -> policy routing (table v2ray) -> tun0 -> Internet
 
 Key behavior
 - No iptables/ip rule flush
 - No host default-route change
 - Idempotent (safe to run repeatedly)
 - Self-heal via systemd after reboot, docker restart, or network restart
+- Separate VM NIC roles: management NIC for SSH/v2rayA GUI, operational NIC for edge traffic
 
 Install flow (current)
 - deploy.sh ensures Docker and Docker Compose are available.
@@ -62,8 +65,13 @@ Important install note
 
 Prerequisites
 - Ubuntu Server
-- GRE tunnel from edge device to this server
-- Edge device PBR/static routes that send LAN CIDRs over GRE
+- Two VM interfaces are recommended:
+  - management NIC for SSH/v2rayA GUI
+  - operational NIC connected toward the edge device
+- Edge mode chosen in wizard:
+  - GRE: create a GRE tunnel from edge device to the operational NIC IP
+  - Direct: send edge traffic directly to the operational NIC, without GRE
+- Edge device PBR/static routes that send LAN CIDRs toward the selected edge path
 
 v2rayA GUI
 - Default GUI: http://<EgressGW-IP>:2017
@@ -80,8 +88,9 @@ v2rayA GUI
   10) Return to server CLI and continue setup wizard
 
 MTU/MSS note (important)
-- If ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
-- Apply MSS clamp on GRE -> tun0 path (for example, 1436 when GRE MTU is 1476).
+- GRE mode: if ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
+- GRE mode applies MSS clamp on GRE -> tun0 path (for example, 1436 when GRE MTU is 1476).
+- Direct mode skips GRE MTU and MSS clamp prompts.
 
 EOF
   echo

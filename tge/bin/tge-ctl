@@ -19,14 +19,30 @@ load_cfg() {
   . "$CFG"
 
   GRE_IF="${GRE_IF:-gre-egress}"
+  TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
+  OPS_NIC="${OPS_NIC:-${PRIMARY_NIC:-}}"
+  case "$TGE_EDGE_MODE" in
+    gre) EDGE_IF="$GRE_IF" ;;
+    direct)
+      EDGE_IF="$OPS_NIC"
+      [[ -n "$EDGE_IF" ]] || { echo "[tge-ctl] ERROR: OPS_NIC is required in direct mode."; exit 2; }
+      ;;
+    *)
+      echo "[tge-ctl] ERROR: invalid TGE_EDGE_MODE=$TGE_EDGE_MODE (use: gre|direct)."
+      exit 2
+      ;;
+  esac
   TUN_IF="${TUN_IF:-tun0}"
   V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
-  if [[ -n "${GRE_TUN_IP:-}" ]]; then
+  V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
+  if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
     GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
-  else
+  elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     GRE_SUBNET="10.255.255.0/30"
   fi
-  GRE_SUBNET_GREP="${GRE_SUBNET//./\\.}"
+  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+    GRE_SUBNET_GREP="${GRE_SUBNET//./\\.}"
+  fi
 }
 
 compose_up() {
@@ -44,7 +60,11 @@ compose_down() {
 }
 
 enable_units() {
-  systemctl enable --now tge-gre.service
+  if [[ "${TGE_EDGE_MODE:-gre}" == "gre" ]]; then
+    systemctl enable --now tge-gre.service
+  else
+    systemctl disable --now tge-gre.service || true
+  fi
   systemctl enable --now tge-apply.service
   systemctl enable --now tge-apply.path
   systemctl enable --now tge-apply.timer
@@ -73,10 +93,10 @@ activate() {
   # Enable self-healing
   enable_units
 
-  # Ensure GRE exists now (best effort)
-  if command -v /usr/local/sbin/tge-gre-ensure >/dev/null 2>&1; then
+  # Ensure GRE exists now when selected (best effort)
+  if [[ "$TGE_EDGE_MODE" == "gre" ]] && command -v /usr/local/sbin/tge-gre-ensure >/dev/null 2>&1; then
     /usr/local/sbin/tge-gre-ensure || true
-  else
+  elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     echo "[tge-ctl] WARN: tge-gre-ensure not found; systemd will still run it."
   fi
 
@@ -96,26 +116,40 @@ deactivate() {
 
   # Remove ONLY our known rules if present (no flush)
   # ip rules (only if exactly match existing line)
-  safe_ip_rule_del 100 "iif $GRE_IF lookup $V2RAY_TABLE"
+  safe_ip_rule_del 100 "iif $EDGE_IF lookup $V2RAY_TABLE"
+  safe_ip_rule_del 100 "iif $EDGE_IF lookup ${V2RAY_TABLE_ID:-100}"
   safe_ip_rule_del 110 "iif $TUN_IF lookup $V2RAY_TABLE"
-  safe_ip_rule_del 101 "to $GRE_SUBNET_GREP lookup main" || true
+  safe_ip_rule_del 110 "iif $TUN_IF lookup ${V2RAY_TABLE_ID:-100}"
+  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+    safe_ip_rule_del 101 "to $GRE_SUBNET_GREP lookup main" || true
+  fi
 
   # Remove iptables rules that belong to us (best-effort)
   if [[ -f "$CFG" ]]; then
     # shellcheck disable=SC1090
     . "$CFG"
     GRE_IF="${GRE_IF:-gre-egress}"
+    TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
+    OPS_NIC="${OPS_NIC:-${PRIMARY_NIC:-}}"
+    if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
+      EDGE_IF="$OPS_NIC"
+    else
+      EDGE_IF="$GRE_IF"
+    fi
     TUN_IF="${TUN_IF:-tun0}"
     V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
+    V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
     MSS_CLAMP="${MSS_CLAMP:-1436}"
     LAN_CIDRS="${LAN_CIDRS:-}"
   fi
 
   # MSS rule
-  safe_iptables_del_mss "$GRE_IF" "$TUN_IF" "$MSS_CLAMP" || true
+  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+    safe_iptables_del_mss "$GRE_IF" "$TUN_IF" "$MSS_CLAMP" || true
+  fi
 
   # FORWARD allow rules
-  safe_iptables_del_forward "$GRE_IF" "$TUN_IF" || true
+  safe_iptables_del_forward "$EDGE_IF" "$TUN_IF" || true
 
   # NAT per LAN CIDR
   if [[ -n "$LAN_CIDRS" ]]; then
