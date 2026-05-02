@@ -28,7 +28,7 @@ Configure on the edge device:
 
 - Next hop or connected interface: V2rayTGE primary NIC
 - Route or PBR: send LAN CIDRs toward the primary NIC
-- On V2rayTGE, set `DIRECT_EDGE_GW` to the Forti/router IP address facing the TGE primary NIC. This is required for return traffic when client LANs are behind the edge device.
+- On V2rayTGE, set `DIRECT_EDGE_GW` to the gateway that reaches the client LANs. The wizard suggests the server default gateway automatically; keep it when that gateway is the Forti/router path back to the LANs.
 - No GRE tunnel is required
 - No GRE MTU or MSS clamp setting is required by V2rayTGE
 

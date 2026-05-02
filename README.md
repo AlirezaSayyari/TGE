@@ -12,7 +12,7 @@ and forwards it to the Internet through **v2rayA** by policy-routing to `tun0` (
 
 Supported edge modes:
 - **GRE mode**: the previous design, where the edge device sends LAN traffic through a GRE tunnel.
-- **Direct mode**: the server primary NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used. If LANs are behind an edge device, configure the edge next-hop IP so return routes go back through that device.
+- **Direct mode**: the server primary NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used. The wizard suggests the server default gateway as the edge next-hop; keep it if that gateway is the Forti/router path back to client LANs.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -126,7 +126,7 @@ Direct mode skips GRE MTU and MSS clamp configuration.
 ### On the Edge Device (Any Vendor)
 You must configure one of these modes:
 1. **GRE mode**: create a GRE tunnel towards the EgressGW primary NIC IP, then route/PBR LAN CIDRs into the GRE tunnel.
-2. **Direct mode**: route/PBR LAN CIDRs directly toward the EgressGW primary NIC, and set the edge next-hop IP to the Forti/router interface IP facing TGE.
+2. **Direct mode**: route/PBR LAN CIDRs directly toward the EgressGW primary NIC, and set the edge next-hop IP to the gateway that reaches those LANs. In many deployments this is the server default gateway.
 
 V2rayTGE is **vendor-neutral** and does not assume FortiGate.
 
@@ -158,7 +158,7 @@ The wizard asks you step-by-step:
 * primary NIC selection (used to discover local server IP)
 * edge mode: `gre` or `direct`
 * GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
-* Forti/edge next-hop IP only when direct mode is selected
+* Forti/edge next-hop IP only when direct mode is selected; the server default gateway is suggested automatically
 * one or more LAN CIDRs (validated: correct format, no duplicates, no overlap)
 * MSS clamp only when GRE mode is selected
 * v2rayA GUI port (default 2017)

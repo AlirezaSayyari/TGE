@@ -83,6 +83,16 @@ print(str(peer))
 PY
 }
 
+default_gateway_for_iface(){
+  local iface="$1"
+  local gw
+  gw="$(ip route show default dev "$iface" 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}' | head -n1)"
+  if [[ -z "$gw" ]]; then
+    gw="$(ip route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}' | head -n1)"
+  fi
+  echo "$gw"
+}
+
 
 echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 
@@ -153,8 +163,12 @@ if [[ "$edge_mode" == "gre" ]]; then
   gre_mtu="${gre_mtu:-$default_gre_mtu}"
   validate_int_range "$gre_mtu" 1200 9000
 else
-  read -r -p "Forti/edge next-hop IP for LAN return routes [${default_direct_edge_gw}] (blank only if LANs are directly connected): " direct_edge_gw
-  direct_edge_gw="${direct_edge_gw:-$default_direct_edge_gw}"
+  guessed_direct_edge_gw="${default_direct_edge_gw:-$(default_gateway_for_iface "$nic")}"
+  if [[ -n "$guessed_direct_edge_gw" ]]; then
+    echo "[wizard] suggested direct next-hop from server default gateway: $guessed_direct_edge_gw"
+  fi
+  read -r -p "Forti/edge next-hop IP for LAN return routes [${guessed_direct_edge_gw}] (blank only if LANs are directly connected): " direct_edge_gw
+  direct_edge_gw="${direct_edge_gw:-$guessed_direct_edge_gw}"
   if [[ -n "$direct_edge_gw" ]]; then
     validate_ipv4 "$direct_edge_gw"
   fi
