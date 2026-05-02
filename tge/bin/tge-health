@@ -11,6 +11,7 @@ need_root
 GRE_IF="${GRE_IF:-gre-egress}"
 TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 PRIMARY_NIC="${PRIMARY_NIC:-}"
+DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
 case "$TGE_EDGE_MODE" in
   gre) EDGE_IF="$GRE_IF" ;;
   direct) EDGE_IF="$PRIMARY_NIC" ;;
@@ -30,6 +31,9 @@ ip6t="$(iptables_backend_kind ip6tables)"
 echo "=== TGE Health Check (read-only) ==="
 echo "[info] edge mode: $TGE_EDGE_MODE"
 echo "[info] edge interface: ${EDGE_IF:-<missing>}"
+if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
+  echo "[info] direct edge next-hop: ${DIRECT_EDGE_GW:-<not set>}"
+fi
 echo "[info] desired firewall mode: $desired"
 echo "[info] iptables backend: $ipt"
 echo "[info] ip6tables backend: $ip6t"
@@ -58,6 +62,21 @@ chk "FORWARD edge->tun" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
 chk "FORWARD tun->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr "," " "); do
+    if [[ "$TGE_EDGE_MODE" == "direct" && -n "$DIRECT_EDGE_GW" ]]; then
+      if ip route show table "$V2RAY_TABLE" "$cidr" 2>/dev/null | grep -qE "^${cidr//\//\\/} via ${DIRECT_EDGE_GW//./\\.} dev ${EDGE_IF}"; then
+        echo "[OK]  route $cidr via $DIRECT_EDGE_GW dev $EDGE_IF in $V2RAY_TABLE"
+      else
+        echo "[BAD] route $cidr via $DIRECT_EDGE_GW dev $EDGE_IF in $V2RAY_TABLE"
+        ok=0
+      fi
+    else
+      if ip route show table "$V2RAY_TABLE" "$cidr" 2>/dev/null | grep -qE "^${cidr//\//\\/} dev ${EDGE_IF}"; then
+        echo "[OK]  route $cidr dev $EDGE_IF in $V2RAY_TABLE"
+      else
+        echo "[BAD] route $cidr dev $EDGE_IF in $V2RAY_TABLE"
+        ok=0
+      fi
+    fi
     if iptables -t nat -C POSTROUTING -s "$cidr" -o "$TUN_IF" -j MASQUERADE >/dev/null 2>&1; then
       echo "[OK]  NAT $cidr -> $TUN_IF"
     else

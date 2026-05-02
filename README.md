@@ -12,7 +12,7 @@ and forwards it to the Internet through **v2rayA** by policy-routing to `tun0` (
 
 Supported edge modes:
 - **GRE mode**: the previous design, where the edge device sends LAN traffic through a GRE tunnel.
-- **Direct mode**: the server primary NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used.
+- **Direct mode**: the server primary NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used. If LANs are behind an edge device, configure the edge next-hop IP so return routes go back through that device.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -126,7 +126,7 @@ Direct mode skips GRE MTU and MSS clamp configuration.
 ### On the Edge Device (Any Vendor)
 You must configure one of these modes:
 1. **GRE mode**: create a GRE tunnel towards the EgressGW primary NIC IP, then route/PBR LAN CIDRs into the GRE tunnel.
-2. **Direct mode**: route/PBR LAN CIDRs directly toward the EgressGW primary NIC.
+2. **Direct mode**: route/PBR LAN CIDRs directly toward the EgressGW primary NIC, and set the edge next-hop IP to the Forti/router interface IP facing TGE.
 
 V2rayTGE is **vendor-neutral** and does not assume FortiGate.
 
@@ -158,6 +158,7 @@ The wizard asks you step-by-step:
 * primary NIC selection (used to discover local server IP)
 * edge mode: `gre` or `direct`
 * GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
+* Forti/edge next-hop IP only when direct mode is selected
 * one or more LAN CIDRs (validated: correct format, no duplicates, no overlap)
 * MSS clamp only when GRE mode is selected
 * v2rayA GUI port (default 2017)
@@ -260,6 +261,7 @@ sudo tge-health
 Checks:
 
 * selected edge interface exists (`gre-egress` in GRE mode, primary NIC in direct mode)
+* direct-mode LAN return routes use the configured edge next-hop when set
 * `tun0` exists
 * required `ip rule` entries exist
 * `v2ray` table routes exist
@@ -377,4 +379,3 @@ sudo rm -f /usr/local/sbin/tge /usr/local/sbin/tge-*
 sudo rm -f /etc/systemd/system/tge-*.service /etc/systemd/system/tge-*.timer /etc/systemd/system/tge-*.path
 sudo systemctl daemon-reload
 ```
-

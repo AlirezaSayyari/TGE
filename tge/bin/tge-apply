@@ -32,6 +32,7 @@ log(){ echo "[tge-apply] $*"; }
 GRE_IF="${GRE_IF:-gre-egress}"
 TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 PRIMARY_NIC="${PRIMARY_NIC:-}"
+DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
 TUN_IF="${TUN_IF:-tun0}"
 V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
@@ -94,7 +95,14 @@ ip route replace default dev "$TUN_IF" table "$V2RAY_TABLE"
 # LAN CIDRs (comma separated)
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
-    ip route replace "$cidr" dev "$EDGE_IF" table "$V2RAY_TABLE"
+    if [[ "$TGE_EDGE_MODE" == "direct" && -n "$DIRECT_EDGE_GW" ]]; then
+      ip route replace "$cidr" via "$DIRECT_EDGE_GW" dev "$EDGE_IF" table "$V2RAY_TABLE"
+    else
+      if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
+        log "WARN: DIRECT_EDGE_GW is empty; routing $cidr as directly connected on $EDGE_IF."
+      fi
+      ip route replace "$cidr" dev "$EDGE_IF" table "$V2RAY_TABLE"
+    fi
   done
 else
   log "WARN: LAN_CIDRS empty; routing table may be incomplete."

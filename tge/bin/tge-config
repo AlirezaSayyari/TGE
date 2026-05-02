@@ -14,7 +14,7 @@ if [[ -r "$META_FILE" ]]; then
 fi
 
 need_root
-default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
+default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_direct_edge_gw="${DIRECT_EDGE_GW:-}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
 
 preview_nic="$(guess_primary_nic)"
 [[ -n "$preview_nic" ]] || preview_nic="eth0"
@@ -115,6 +115,7 @@ gre_remote_ip=""
 gre_tun_ip=""
 gre_mtu=""
 mss=""
+direct_edge_gw=""
 
 if [[ "$edge_mode" == "gre" ]]; then
   read -r -p "Confirm local GRE source IP [${local_ip}]: " gre_local_ip
@@ -151,6 +152,12 @@ if [[ "$edge_mode" == "gre" ]]; then
   read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
   gre_mtu="${gre_mtu:-$default_gre_mtu}"
   validate_int_range "$gre_mtu" 1200 9000
+else
+  read -r -p "Forti/edge next-hop IP for LAN return routes [${default_direct_edge_gw}] (blank only if LANs are directly connected): " direct_edge_gw
+  direct_edge_gw="${direct_edge_gw:-$default_direct_edge_gw}"
+  if [[ -n "$direct_edge_gw" ]]; then
+    validate_ipv4 "$direct_edge_gw"
+  fi
 fi
 
 # 4.4 LAN CIDRs (multiple)
@@ -191,6 +198,7 @@ cat > "$CFG" <<EOF
 # V2rayTGE configuration
 TGE_EDGE_MODE="$edge_mode"
 PRIMARY_NIC="$nic"
+DIRECT_EDGE_GW="$direct_edge_gw"
 GRE_IF="gre-egress"
 GRE_LOCAL_IP="$gre_local_ip"
 GRE_REMOTE_IP="$gre_remote_ip"
@@ -221,6 +229,11 @@ if [[ "$edge_mode" == "gre" ]]; then
 else
   echo "- Direct mode:"
   echo "  Send edge traffic directly to primary NIC: $nic (${local_ip:-no IPv4 detected})"
+  if [[ -n "$direct_edge_gw" ]]; then
+    echo "  TGE will route LAN return traffic via edge next-hop: $direct_edge_gw"
+  else
+    echo "  No edge next-hop configured; LAN CIDRs must be directly connected to $nic."
+  fi
   echo "  No GRE tunnel, GRE MTU, or MSS clamp is configured in this mode."
   echo
 fi
