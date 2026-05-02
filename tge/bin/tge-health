@@ -9,18 +9,27 @@ need_root
 . "$CFG"
 
 GRE_IF="${GRE_IF:-gre-egress}"
+TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
+PRIMARY_NIC="${PRIMARY_NIC:-}"
+case "$TGE_EDGE_MODE" in
+  gre) EDGE_IF="$GRE_IF" ;;
+  direct) EDGE_IF="$PRIMARY_NIC" ;;
+  *) EDGE_IF="$GRE_IF" ;;
+esac
 TUN_IF="${TUN_IF:-tun0}"
 V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
 GRE_SUBNET="10.255.255.0/30"
-[[ -n "${GRE_TUN_IP:-}" ]] && GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
+[[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]] && GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
 
 desired="$(firewall_backend_mode)"
 ipt="$(iptables_backend_kind iptables)"
 ip6t="$(iptables_backend_kind ip6tables)"
 
 echo "=== TGE Health Check (read-only) ==="
+echo "[info] edge mode: $TGE_EDGE_MODE"
+echo "[info] edge interface: ${EDGE_IF:-<missing>}"
 echo "[info] desired firewall mode: $desired"
 echo "[info] iptables backend: $ipt"
 echo "[info] ip6tables backend: $ip6t"
@@ -33,14 +42,20 @@ if [[ "$desired" == "legacy" ]]; then
 else
   echo "[WARN] nft mode is selected (advanced/experimental)."
 fi
-chk "gre exists" ip link show "$GRE_IF" >/dev/null 2>&1
+if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+  chk "gre exists" ip link show "$GRE_IF" >/dev/null 2>&1
+else
+  chk "primary NIC exists" ip link show "$EDGE_IF" >/dev/null 2>&1
+fi
 chk "tun exists" ip link show "$TUN_IF" >/dev/null 2>&1
-chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $GRE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $GRE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
-chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
+chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
+if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+  chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
+fi
 chk "rule 110" bash -lc "ip -o rule show | grep -qE '110:.*iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
 chk "route default in $V2RAY_TABLE" bash -lc "ip route show table $V2RAY_TABLE | grep -qE \"^default dev $TUN_IF\" || ip route show table $V2RAY_TABLE_ID | grep -qE \"^default dev $TUN_IF\""
-chk "FORWARD gre->tun" iptables -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -j ACCEPT
-chk "FORWARD tun->gre established" iptables -C FORWARD -i "$TUN_IF" -o "$GRE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+chk "FORWARD edge->tun" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
+chk "FORWARD tun->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr "," " "); do
     if iptables -t nat -C POSTROUTING -s "$cidr" -o "$TUN_IF" -j MASQUERADE >/dev/null 2>&1; then
@@ -53,7 +68,11 @@ if [[ -n "${LAN_CIDRS:-}" ]]; then
 else
   echo "[WARN] LAN_CIDRS is empty in config."
 fi
-chk "MSS clamp" iptables -t mangle -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
+if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+  chk "MSS clamp" iptables -t mangle -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
+else
+  echo "[OK]  MSS clamp skipped in direct mode"
+fi
 echo
 if [[ "$ok" -eq 1 ]]; then
   echo "✅ HEALTH: OK"
