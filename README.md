@@ -5,10 +5,8 @@
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
 
 # V2rayTGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA Egress Gateway
-# V2rayTGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA Egress Gateway
 
 V2rayTGE is a **production-safe** installer + CLI toolkit that turns an Ubuntu server into an **Egress Gateway**.
-It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
 It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
 and forwards it to the Internet through **v2rayA** by policy-routing to `tun0` (created by v2rayA running in Docker).
 
@@ -33,8 +31,6 @@ This project is designed for real production environments:
 - `tun0` : created by v2rayA (Docker host networking)
 
 ### Traffic Flow
-
-GRE mode:
 
 GRE mode:
 
@@ -86,20 +82,14 @@ Your server keeps its default route on `ensXXX`.
 V2rayTGE only:
 - ensures a separate routing table (`v2ray`)
 - ensures policy rules for traffic entering via the selected edge interface
-- ensures policy rules for traffic entering via the selected edge interface
 
 ### 2) Policy Routing Rules
 V2rayTGE ensures these rules exist (and does not delete/flush others):
 - `pref 100`: traffic **incoming on selected edge interface** → `lookup v2ray`
-- `pref 100`: traffic **incoming on selected edge interface** → `lookup v2ray`
 - `pref 110`: helper rule for traffic involving `tun0` → `lookup v2ray`
-- `pref 101`: keep GRE subnet stable in `main` (GRE mode only)
 - `pref 101`: keep GRE subnet stable in `main` (GRE mode only)
 
 ### 3) Forwarding + NAT
-To let LAN subnets behind the edge device reach the Internet via `tun0`:
-- FORWARD: allow selected edge interface → `tun0`
-- FORWARD: allow return `tun0` → selected edge interface for `RELATED,ESTABLISHED`
 To let LAN subnets behind the edge device reach the Internet via `tun0`:
 - FORWARD: allow selected edge interface → `tun0`
 - FORWARD: allow return `tun0` → selected edge interface for `RELATED,ESTABLISHED`
@@ -120,8 +110,6 @@ large packets with DF=1 can’t pass a smaller MTU link.
 Defaults:
 - `GRE MTU = 1476`
 - `MSS Clamp = 1436` (≈ MTU - 40)
-
-Direct mode skips GRE MTU and MSS clamp configuration.
 
 Direct mode skips GRE MTU and MSS clamp configuration.
 
@@ -171,7 +159,6 @@ The wizard asks you step-by-step:
 * edge mode: `gre` or `direct`
 * GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
 * one or more LAN CIDRs (validated: correct format, no duplicates, no overlap)
-* MSS clamp only when GRE mode is selected
 * MSS clamp only when GRE mode is selected
 * v2rayA GUI port (default 2017)
 
@@ -228,7 +215,6 @@ Activate does:
 * runs firewall backend preflight (`legacy` by default)
 * starts v2rayA via docker compose
 * enables systemd units (GRE ensure only in GRE mode, plus apply + path + timer)
-* enables systemd units (GRE ensure only in GRE mode, plus apply + path + timer)
 * runs an immediate safe ensure pass
 
 ### Deactivate
@@ -250,9 +236,7 @@ Installed units:
 
 * `tge-gre.service`
   Ensures GRE tunnel exists in GRE mode; no-op in direct mode (**idempotent, no delete**)
-  Ensures GRE tunnel exists in GRE mode; no-op in direct mode (**idempotent, no delete**)
 * `tge-apply.service`
-  Ensures policy routing + iptables, plus GRE MSS fix when applicable (**no flush**)
   Ensures policy routing + iptables, plus GRE MSS fix when applicable (**no flush**)
 * `tge-apply.path`
   Triggers apply when `tun0` appears
@@ -279,7 +263,6 @@ Checks:
 * `tun0` exists
 * required `ip rule` entries exist
 * `v2ray` table routes exist
-* MSS clamp rule exists in GRE mode; skipped in direct mode
 * MSS clamp rule exists in GRE mode; skipped in direct mode
 * optional quick curl test from the gateway
 

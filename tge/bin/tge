@@ -89,9 +89,6 @@ MTU/MSS note (important)
 - GRE mode: if ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
 - GRE mode applies MSS clamp on GRE -> tun0 path (for example, 1436 when GRE MTU is 1476).
 - Direct mode skips GRE MTU and MSS clamp prompts.
-- GRE mode: if ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
-- GRE mode applies MSS clamp on GRE -> tun0 path (for example, 1436 when GRE MTU is 1476).
-- Direct mode skips GRE MTU and MSS clamp prompts.
 
 EOF
   echo

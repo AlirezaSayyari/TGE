@@ -51,16 +51,10 @@ esac
 
 # Derive GRE subnet from configured tunnel CIDR (e.g. 10.255.255.6/30 -> 10.255.255.4/30)
 if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
-if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
   GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
-elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
 elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   GRE_SUBNET="10.255.255.0/30"
   log "WARN: GRE_TUN_IP missing; fallback GRE_SUBNET=$GRE_SUBNET"
-fi
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  GRE_SUBNET_RE="${GRE_SUBNET//./\\.}"
-  GRE_SUBNET_RE="${GRE_SUBNET_RE//\//\\/}"
 fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   GRE_SUBNET_RE="${GRE_SUBNET//./\\.}"
@@ -70,13 +64,10 @@ fi
 # 0) Quick wait: avoid boot flaps; but never hard-fail (no start-limit storms)
 for _ in $(seq 1 30); do
   ip link show "$EDGE_IF" >/dev/null 2>&1 || { sleep 1; continue; }
-  ip link show "$EDGE_IF" >/dev/null 2>&1 || { sleep 1; continue; }
   ip link show "$TUN_IF" >/dev/null 2>&1 || { sleep 1; continue; }
   break
 done
 
-if ! ip link show "$EDGE_IF" >/dev/null 2>&1; then
-  log "WARN: $EDGE_IF missing; exit 0 (no change)."
 if ! ip link show "$EDGE_IF" >/dev/null 2>&1; then
   log "WARN: $EDGE_IF missing; exit 0 (no change)."
   exit 0
@@ -92,7 +83,6 @@ sysctl -w net.ipv4.ip_forward=1 >/dev/null
 sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null
 sysctl -w "net.ipv4.conf.${EDGE_IF}.rp_filter=0" >/dev/null || true
-sysctl -w "net.ipv4.conf.${EDGE_IF}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${TUN_IF}.rp_filter=0"  >/dev/null || true
 
 # 2) rt_tables ensure (append-only if missing)
@@ -104,7 +94,6 @@ ip route replace default dev "$TUN_IF" table "$V2RAY_TABLE"
 # LAN CIDRs (comma separated)
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
-    ip route replace "$cidr" dev "$EDGE_IF" table "$V2RAY_TABLE"
     ip route replace "$cidr" dev "$EDGE_IF" table "$V2RAY_TABLE"
   done
 else
@@ -121,22 +110,7 @@ if [[ -n "$rule100_line" ]] \
 fi
 ensure_rule_pref 100 "iif ${EDGE_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
   ip rule add pref 100 iif "$EDGE_IF" lookup "$V2RAY_TABLE"
-rule100_line="$(ip -o rule show 2>/dev/null | awk '$1=="100:"{print; exit}')"
-if [[ -n "$rule100_line" ]] \
-  && ! echo "$rule100_line" | grep -qE "iif ${EDGE_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
-  && echo "$rule100_line" | grep -qE "lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"; then
-  log "INFO: pref 100 belongs to TGE but targets a different edge interface; replacing. line=[$rule100_line]"
-  ip rule del pref 100 || true
-fi
-ensure_rule_pref 100 "iif ${EDGE_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
-  ip rule add pref 100 iif "$EDGE_IF" lookup "$V2RAY_TABLE"
 
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  rule101_line="$(ip -o rule show 2>/dev/null | awk '$1=="101:"{print; exit}')"
-  if [[ -n "$rule101_line" ]] && ! echo "$rule101_line" | grep -qE "to ${GRE_SUBNET_RE} .*lookup main"; then
-    log "INFO: pref 101 exists with different subnet; replacing. line=[$rule101_line]"
-    ip rule del pref 101 || true
-  fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   rule101_line="$(ip -o rule show 2>/dev/null | awk '$1=="101:"{print; exit}')"
   if [[ -n "$rule101_line" ]] && ! echo "$rule101_line" | grep -qE "to ${GRE_SUBNET_RE} .*lookup main"; then
@@ -148,12 +122,7 @@ if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   ensure_rule_pref 101 "to ${GRE_SUBNET_RE} .*lookup main" \
     ip rule add pref 101 to "$GRE_SUBNET" lookup main
 fi
-  # Stability helper: keep GRE subnet route lookups in main table.
-  ensure_rule_pref 101 "to ${GRE_SUBNET_RE} .*lookup main" \
-    ip rule add pref 101 to "$GRE_SUBNET" lookup main
-fi
 
-ensure_rule_pref 110 "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
 ensure_rule_pref 110 "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
   ip rule add pref 110 iif "$TUN_IF" lookup "$V2RAY_TABLE"
 
@@ -171,14 +140,7 @@ fi
 # FORWARD allow edge->tun and return established
 iptables_ensure filter FORWARD "-i $EDGE_IF -o $TUN_IF -j ACCEPT"
 iptables_ensure filter FORWARD "-i $TUN_IF -o $EDGE_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
-# FORWARD allow edge->tun and return established
-iptables_ensure filter FORWARD "-i $EDGE_IF -o $TUN_IF -j ACCEPT"
-iptables_ensure filter FORWARD "-i $TUN_IF -o $EDGE_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
 
-# MSS Clamp critical fix for GRE only; direct mode keeps native interface MTU/MSS.
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  iptables_ensure_mangle_insert_first "$GRE_IF" "$TUN_IF" "$MSS_CLAMP"
-fi
 # MSS Clamp critical fix for GRE only; direct mode keeps native interface MTU/MSS.
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   iptables_ensure_mangle_insert_first "$GRE_IF" "$TUN_IF" "$MSS_CLAMP"
@@ -186,9 +148,6 @@ fi
 
 # Keep generic clamps (ensure only)
 iptables_ensure mangle FORWARD "-o $TUN_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  iptables_ensure mangle FORWARD "-o $GRE_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
-fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   iptables_ensure mangle FORWARD "-o $GRE_IF -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu"
 fi

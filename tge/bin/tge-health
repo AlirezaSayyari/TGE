@@ -22,15 +22,12 @@ V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
 GRE_SUBNET="10.255.255.0/30"
 [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]] && GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
-[[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]] && GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
 
 desired="$(firewall_backend_mode)"
 ipt="$(iptables_backend_kind iptables)"
 ip6t="$(iptables_backend_kind ip6tables)"
 
 echo "=== TGE Health Check (read-only) ==="
-echo "[info] edge mode: $TGE_EDGE_MODE"
-echo "[info] edge interface: ${EDGE_IF:-<missing>}"
 echo "[info] edge mode: $TGE_EDGE_MODE"
 echo "[info] edge interface: ${EDGE_IF:-<missing>}"
 echo "[info] desired firewall mode: $desired"
@@ -55,14 +52,8 @@ chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup 
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
 fi
-chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
-fi
 chk "rule 110" bash -lc "ip -o rule show | grep -qE '110:.*iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
 chk "route default in $V2RAY_TABLE" bash -lc "ip route show table $V2RAY_TABLE | grep -qE \"^default dev $TUN_IF\" || ip route show table $V2RAY_TABLE_ID | grep -qE \"^default dev $TUN_IF\""
-chk "FORWARD edge->tun" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
-chk "FORWARD tun->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 chk "FORWARD edge->tun" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
 chk "FORWARD tun->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 if [[ -n "${LAN_CIDRS:-}" ]]; then
@@ -76,11 +67,6 @@ if [[ -n "${LAN_CIDRS:-}" ]]; then
   done
 else
   echo "[WARN] LAN_CIDRS is empty in config."
-fi
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  chk "MSS clamp" iptables -t mangle -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
-else
-  echo "[OK]  MSS clamp skipped in direct mode"
 fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "MSS clamp" iptables -t mangle -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"

@@ -36,15 +36,9 @@ load_cfg() {
   V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
   V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
   if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
-  V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
-  if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
     GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
   elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     GRE_SUBNET="10.255.255.0/30"
-  fi
-  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-    GRE_SUBNET_GREP="${GRE_SUBNET//./\\.}"
   fi
   if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     GRE_SUBNET_GREP="${GRE_SUBNET//./\\.}"
@@ -66,11 +60,6 @@ compose_down() {
 }
 
 enable_units() {
-  if [[ "${TGE_EDGE_MODE:-gre}" == "gre" ]]; then
-    systemctl enable --now tge-gre.service
-  else
-    systemctl disable --now tge-gre.service || true
-  fi
   if [[ "${TGE_EDGE_MODE:-gre}" == "gre" ]]; then
     systemctl enable --now tge-gre.service
   else
@@ -106,10 +95,7 @@ activate() {
 
   # Ensure GRE exists now when selected (best effort)
   if [[ "$TGE_EDGE_MODE" == "gre" ]] && command -v /usr/local/sbin/tge-gre-ensure >/dev/null 2>&1; then
-  # Ensure GRE exists now when selected (best effort)
-  if [[ "$TGE_EDGE_MODE" == "gre" ]] && command -v /usr/local/sbin/tge-gre-ensure >/dev/null 2>&1; then
     /usr/local/sbin/tge-gre-ensure || true
-  elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     echo "[tge-ctl] WARN: tge-gre-ensure not found; systemd will still run it."
   fi
@@ -153,7 +139,6 @@ deactivate() {
     TUN_IF="${TUN_IF:-tun0}"
     V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
     V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
-    V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
     MSS_CLAMP="${MSS_CLAMP:-1436}"
     LAN_CIDRS="${LAN_CIDRS:-}"
   fi
@@ -162,12 +147,8 @@ deactivate() {
   if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     safe_iptables_del_mss "$GRE_IF" "$TUN_IF" "$MSS_CLAMP" || true
   fi
-  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-    safe_iptables_del_mss "$GRE_IF" "$TUN_IF" "$MSS_CLAMP" || true
-  fi
 
   # FORWARD allow rules
-  safe_iptables_del_forward "$EDGE_IF" "$TUN_IF" || true
   safe_iptables_del_forward "$EDGE_IF" "$TUN_IF" || true
 
   # NAT per LAN CIDR
