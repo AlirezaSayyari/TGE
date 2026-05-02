@@ -90,7 +90,7 @@ echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 tun0_precheck_or_guide
 
 
-# 4.1 NIC selection
+# 4.1 NIC and edge-mode selection
 guess_nic="$(guess_primary_nic)"
 echo "Detected primary NIC: $guess_nic"
 read -r -p "Confirm primary NIC for server (management + edge traffic) [${guess_nic}]: " nic
@@ -125,7 +125,31 @@ if [[ "$edge_mode" == "gre" ]]; then
   read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
   gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
   validate_ipv4 "$gre_remote_ip"
+  # 4.2 remote GRE IP
+  read -r -p "Confirm/Enter GRE remote IP (edge device IP) [${default_gre_remote_ip}]: " gre_remote_ip
+  gre_remote_ip="${gre_remote_ip:-$default_gre_remote_ip}"
+  validate_ipv4 "$gre_remote_ip"
 
+  # 4.3 GRE tunnel IP + confirm
+  while true; do
+    read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
+    gre_tun_ip="${gre_tun_ip:-$default_gre_tun_ip}"
+    if ! validate_cidr "$gre_tun_ip" >/dev/null 2>&1; then
+      echo "ERROR: invalid CIDR: $gre_tun_ip"
+      continue
+    fi
+    tun_subnet="$(cidr_network "$gre_tun_ip")"
+    peer_ip="$(calc_peer_ip "$gre_tun_ip" || true)"
+    echo "[wizard] tunnel subnet: $tun_subnet"
+    if [[ -n "$peer_ip" ]]; then
+      echo "[wizard] suggested edge tunnel IP: $peer_ip"
+    else
+      echo "[wizard] note: /30 is recommended for GRE point-to-point tunnel IPs."
+    fi
+    read -r -p "Confirm this GRE tunnel IP/CIDR? [Y/n]: " tun_confirm
+    tun_confirm="${tun_confirm:-Y}"
+    [[ "$tun_confirm" =~ ^[Yy]$ ]] && break
+  done
   # 4.3 GRE tunnel IP + confirm
   while true; do
     read -r -p "Confirm/Enter GRE tunnel IP/CIDR for THIS server [${default_gre_tun_ip}]: " gre_tun_ip
@@ -152,6 +176,11 @@ if [[ "$edge_mode" == "gre" ]]; then
   gre_mtu="${gre_mtu:-$default_gre_mtu}"
   validate_int_range "$gre_mtu" 1200 9000
 fi
+  # GRE MTU
+  read -r -p "Confirm/Enter GRE MTU [${default_gre_mtu}]: " gre_mtu
+  gre_mtu="${gre_mtu:-$default_gre_mtu}"
+  validate_int_range "$gre_mtu" 1200 9000
+fi
 
 # 4.4 LAN CIDRs (multiple)
 echo "Confirm/Enter LAN CIDRs behind edge device (multiple allowed). Default: $default_lan_cidr"
@@ -173,6 +202,13 @@ fi
 
 validate_no_overlap "${lan_list[@]}"
 
+if [[ "$edge_mode" == "gre" ]]; then
+  # 4.6 MSS clamp
+  echo "MSS Clamp recommended: (GRE_MTU - 40). Example: 1476-40=1436"
+  read -r -p "Confirm/Enter MSS clamp value [${default_mss}]: " mss
+  mss="${mss:-$default_mss}"
+  validate_int_range "$mss" 536 1460
+fi
 if [[ "$edge_mode" == "gre" ]]; then
   # 4.6 MSS clamp
   echo "MSS Clamp recommended: (GRE_MTU - 40). Example: 1476-40=1436"
