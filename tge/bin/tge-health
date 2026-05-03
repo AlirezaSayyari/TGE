@@ -65,6 +65,15 @@ wg_recent_handshake(){
 wg_service_active(){
   systemctl is-active --quiet "wg-quick@${WIREGUARD_IF}"
 }
+gre_params_match(){
+  ip -d tunnel show "$GRE_IF" 2>/dev/null | grep -q "remote ${GRE_REMOTE_IP:-} local ${GRE_LOCAL_IP:-}"
+}
+gre_addr_match(){
+  ip -o -4 addr show dev "$GRE_IF" 2>/dev/null | awk '{print $4}' | grep -qx "${GRE_TUN_IP:-}"
+}
+gre_mtu_match(){
+  ip -o link show dev "$GRE_IF" 2>/dev/null | grep -q "mtu ${GRE_MTU:-1476}"
+}
 if [[ "$desired" == "legacy" ]]; then
   chk "iptables legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
 else
@@ -72,6 +81,9 @@ else
 fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "gre exists" link_exists "$GRE_IF"
+  chk "gre local/remote match config" gre_params_match
+  chk "gre tunnel address match config" gre_addr_match
+  chk "gre MTU match config" gre_mtu_match
 else
   chk "primary NIC exists" link_exists "$EDGE_IF"
 fi

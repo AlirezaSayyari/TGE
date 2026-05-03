@@ -13,6 +13,13 @@ TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 
 log(){ echo "[tge-gre] $*"; }
 
+create_gre(){
+  ip tunnel add "$GRE_IF" mode gre local "$GRE_LOCAL_IP" remote "$GRE_REMOTE_IP" ttl 255
+  ip addr add "$GRE_TUN_IP" dev "$GRE_IF"
+  ip link set "$GRE_IF" up
+  ip link set dev "$GRE_IF" mtu "$GRE_MTU"
+}
+
 if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
   log "direct mode selected; GRE tunnel is not required."
   exit 0
@@ -26,12 +33,19 @@ fi
 if ip link show "$GRE_IF" >/dev/null 2>&1; then
   # validate tunnel params best-effort
   if ! ip -d tunnel show "$GRE_IF" 2>/dev/null | grep -q "remote $GRE_REMOTE_IP local $GRE_LOCAL_IP"; then
-    log "WARN: $GRE_IF exists but differs; not modifying."
+    log "WARN: $GRE_IF exists but differs; recreating TGE-owned GRE tunnel."
+    ip link set "$GRE_IF" down 2>/dev/null || true
+    ip tunnel del "$GRE_IF" 2>/dev/null || ip link del "$GRE_IF" 2>/dev/null || true
+    create_gre
+    log "OK: $GRE_IF recreated."
     exit 0
   fi
   # ensure address
-  if ! ip -br addr show dev "$GRE_IF" | grep -qE "\\b${GRE_TUN_IP%/*}/"; then
-    ip addr add "$GRE_TUN_IP" dev "$GRE_IF" || true
+  if ! ip -o -4 addr show dev "$GRE_IF" | awk '{print $4}' | grep -qx "$GRE_TUN_IP"; then
+    ip -o -4 addr show dev "$GRE_IF" | awk '{print $4}' | while read -r old; do
+      ip addr del "$old" dev "$GRE_IF" 2>/dev/null || true
+    done
+    ip addr add "$GRE_TUN_IP" dev "$GRE_IF"
   fi
   ip link set "$GRE_IF" up || true
   ip link set dev "$GRE_IF" mtu "$GRE_MTU" || true
@@ -39,8 +53,5 @@ if ip link show "$GRE_IF" >/dev/null 2>&1; then
   exit 0
 fi
 
-ip tunnel add "$GRE_IF" mode gre local "$GRE_LOCAL_IP" remote "$GRE_REMOTE_IP" ttl 255
-ip addr add "$GRE_TUN_IP" dev "$GRE_IF"
-ip link set "$GRE_IF" up
-ip link set dev "$GRE_IF" mtu "$GRE_MTU"
+create_gre
 log "OK: $GRE_IF created."
