@@ -143,7 +143,7 @@ PY
 }
 
 wireguard_config_wizard(){
-  local source_choice wg_src tmp line idle_count
+  local source_choice wg_src tmp line
   read -r -p "WireGuard interface name [${default_wg_if}]: " wireguard_if
   wireguard_if="${wireguard_if:-$default_wg_if}"
   validate_ifname "$wireguard_if"
@@ -167,22 +167,8 @@ wireguard_config_wizard(){
       cat <<'EOF'
 Paste WireGuard config now.
 Finish by typing END on a new line and pressing Enter.
-If you paste from an interactive terminal, the wizard also auto-finishes after a short idle pause.
 EOF
-      idle_count=0
-      while true; do
-        if ! IFS= read -r -t 3 line; then
-          if [[ -s "$tmp" ]]; then
-            idle_count=$((idle_count + 1))
-            if (( idle_count >= 2 )); then
-              echo "[wizard] paste input idle; finishing WireGuard config paste."
-              break
-            fi
-            continue
-          fi
-          continue
-        fi
-        idle_count=0
+      while IFS= read -r line; do
         [[ "$line" == "END" ]] && break
         printf '%s\n' "$line" >> "$tmp"
       done
