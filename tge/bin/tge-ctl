@@ -19,8 +19,10 @@ load_cfg() {
   . "$CFG"
 
   GRE_IF="${GRE_IF:-gre-egress}"
+  TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
   TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
   PRIMARY_NIC="${PRIMARY_NIC:-}"
+  WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
   case "$TGE_EDGE_MODE" in
     gre) EDGE_IF="$GRE_IF" ;;
     direct)
@@ -32,7 +34,18 @@ load_cfg() {
       exit 2
       ;;
   esac
-  TUN_IF="${TUN_IF:-tun0}"
+  case "$TGE_EGRESS_MODE" in
+    v2raya_tun|wireguard) ;;
+    *)
+      echo "[tge-ctl] ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard)."
+      exit 2
+      ;;
+  esac
+  if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+    TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
+  else
+    TUN_IF="${TUN_IF:-tun0}"
+  fi
   V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
   V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
   if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
@@ -66,7 +79,11 @@ enable_units() {
     systemctl disable --now tge-gre.service || true
   fi
   systemctl enable --now tge-apply.service
-  systemctl enable --now tge-apply.path
+  if [[ "${TGE_EGRESS_MODE:-v2raya_tun}" == "v2raya_tun" ]]; then
+    systemctl enable --now tge-apply.path
+  else
+    systemctl disable --now tge-apply.path || true
+  fi
   systemctl enable --now tge-apply.timer
 }
 
@@ -87,8 +104,15 @@ activate() {
   fi
 
 
-  # Bring up v2rayA container (best effort)
-  compose_up
+  if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+    systemctl enable --now "wg-quick@${WIREGUARD_IF}" || {
+      echo "[tge-ctl] ERROR: failed to start wg-quick@${WIREGUARD_IF}." >&2
+      exit 20
+    }
+  else
+    # Bring up v2rayA container (best effort)
+    compose_up
+  fi
 
   # Enable self-healing
   enable_units
@@ -100,7 +124,7 @@ activate() {
     echo "[tge-ctl] WARN: tge-gre-ensure not found; systemd will still run it."
   fi
 
-  # Ensure rules now (best effort). If tun0 isn't present yet, worker exits 0 safely.
+  # Ensure rules now (best effort). If egress interface isn't present yet, worker exits 0 safely.
   /usr/local/sbin/tge-apply || true
 
   echo "[tge-ctl] ✅ Activated."
@@ -129,14 +153,20 @@ deactivate() {
     # shellcheck disable=SC1090
     . "$CFG"
     GRE_IF="${GRE_IF:-gre-egress}"
+    TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
     TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
     PRIMARY_NIC="${PRIMARY_NIC:-}"
+    WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
     if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
       EDGE_IF="$PRIMARY_NIC"
     else
       EDGE_IF="$GRE_IF"
     fi
-    TUN_IF="${TUN_IF:-tun0}"
+    if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+      TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
+    else
+      TUN_IF="${TUN_IF:-tun0}"
+    fi
     V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
     V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
     MSS_CLAMP="${MSS_CLAMP:-1436}"

@@ -9,15 +9,21 @@ need_root
 . "$CFG"
 
 GRE_IF="${GRE_IF:-gre-egress}"
+TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
 TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 PRIMARY_NIC="${PRIMARY_NIC:-}"
 DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
+WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
 case "$TGE_EDGE_MODE" in
   gre) EDGE_IF="$GRE_IF" ;;
   direct) EDGE_IF="$PRIMARY_NIC" ;;
   *) EDGE_IF="$GRE_IF" ;;
 esac
-TUN_IF="${TUN_IF:-tun0}"
+if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+  TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
+else
+  TUN_IF="${TUN_IF:-tun0}"
+fi
 V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
@@ -29,8 +35,10 @@ ipt="$(iptables_backend_kind iptables)"
 ip6t="$(iptables_backend_kind ip6tables)"
 
 echo "=== TGE Health Check (read-only) ==="
+echo "[info] egress mode: $TGE_EGRESS_MODE"
 echo "[info] edge mode: $TGE_EDGE_MODE"
 echo "[info] edge interface: ${EDGE_IF:-<missing>}"
+echo "[info] egress interface: $TUN_IF"
 if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
   echo "[info] direct edge next-hop: ${DIRECT_EDGE_GW:-<not set>}"
 fi
@@ -41,25 +49,45 @@ echo
 ok=1
 chk(){ local n="$1"; shift; if "$@"; then echo "[OK]  $n"; else echo "[BAD] $n"; ok=0; fi; }
 rule_has(){ ip -o rule show | grep -qE "$1"; }
+link_exists(){ ip link show "$1" >/dev/null 2>&1; }
+case "$TGE_EGRESS_MODE" in
+  v2raya_tun|wireguard) ;;
+  *)
+    echo "[BAD] invalid egress mode: $TGE_EGRESS_MODE"
+    exit 2
+    ;;
+esac
+wg_recent_handshake(){
+  local now
+  now="$(date +%s)"
+  wg show "$TUN_IF" latest-handshakes 2>/dev/null | awk -v now="$now" '{ if ($2 > 0 && now - $2 <= 180) ok=1 } END { exit(ok ? 0 : 1) }'
+}
+wg_service_active(){
+  systemctl is-active --quiet "wg-quick@${WIREGUARD_IF}"
+}
 if [[ "$desired" == "legacy" ]]; then
   chk "iptables legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
 else
   echo "[WARN] nft mode is selected (advanced/experimental)."
 fi
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  chk "gre exists" ip link show "$GRE_IF" >/dev/null 2>&1
+  chk "gre exists" link_exists "$GRE_IF"
 else
-  chk "primary NIC exists" ip link show "$EDGE_IF" >/dev/null 2>&1
+  chk "primary NIC exists" link_exists "$EDGE_IF"
 fi
-chk "tun exists" ip link show "$TUN_IF" >/dev/null 2>&1
+chk "egress interface exists" link_exists "$TUN_IF"
+if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+  chk "WireGuard service active" wg_service_active
+  chk "WireGuard recent handshake" wg_recent_handshake
+fi
 chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
 fi
 chk "rule 110" bash -lc "ip -o rule show | grep -qE '110:.*iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
 chk "route default in $V2RAY_TABLE" bash -lc "ip route show table $V2RAY_TABLE | grep -qE \"^default dev $TUN_IF\" || ip route show table $V2RAY_TABLE_ID | grep -qE \"^default dev $TUN_IF\""
-chk "FORWARD edge->tun" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
-chk "FORWARD tun->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+chk "FORWARD edge->egress" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
+chk "FORWARD egress->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr "," " "); do
     if [[ "$TGE_EDGE_MODE" == "direct" && -n "$DIRECT_EDGE_GW" ]]; then

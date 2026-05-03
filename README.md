@@ -8,11 +8,15 @@
 
 V2rayTGE is a **production-safe** installer + CLI toolkit that turns an Ubuntu server into an **Egress Gateway**.
 It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
-and forwards it to the Internet through **v2rayA** by policy-routing to `tun0` (created by v2rayA running in Docker).
+and forwards it to the Internet through either **v2rayA system-tun** (`tun0`) or **WireGuard** (`wg0`).
 
 Supported edge modes:
 - **GRE mode**: the previous design, where the edge device sends LAN traffic through a GRE tunnel.
 - **Direct mode**: the server primary NIC is the edge-facing interface directly; no GRE, GRE MTU, or MSS clamp prompt is used. The wizard suggests the server default gateway as the edge next-hop; keep it if that gateway is the Forti/router path back to client LANs.
+
+Supported egress backends:
+- **v2rayA system-tun**: policy-routes LAN traffic to `tun0` created by v2rayA.
+- **WireGuard**: policy-routes LAN traffic to a `wg-quick` interface such as `wg0`; the wizard enforces `Table = off` so the server default route is not changed.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -28,7 +32,8 @@ This project is designed for real production environments:
 ### Interfaces on EgressGW
 - `ensXXX` : Primary NIC (management + edge traffic; default route stays here)
 - `gre-egress` : GRE tunnel interface, only in GRE mode
-- `tun0` : created by v2rayA (Docker host networking)
+- `tun0` : created by v2rayA when using v2rayA system-tun
+- `wg0` : created by `wg-quick` when using WireGuard mode
 
 ### Traffic Flow
 
@@ -41,6 +46,20 @@ Edge Device (any vendor)
 EgressGW (gre-egress)
 ↓  Policy Routing (table: v2ray)
 tun0 (v2rayA)
+↓
+Internet
+
+WireGuard egress:
+
+LAN (one or multiple CIDRs)
+↓
+Edge Device (GRE or direct)
+↓
+EgressGW selected edge interface
+↓  Policy Routing (table: v2ray)
+wg0 (WireGuard)
+↓
+Remote WireGuard server
 ↓
 Internet
 
@@ -119,7 +138,8 @@ Direct mode skips GRE MTU and MSS clamp configuration.
 
 ### On EgressGW (Ubuntu)
 - Ubuntu Server
-- Docker + v2rayA (we deploy docker-compose)
+- Docker + v2rayA for v2rayA system-tun mode, or WireGuard config for WireGuard mode
+- `wireguard-tools` for WireGuard mode
 - root access (systemd + iptables ensure)
 - One primary NIC for both management and edge traffic
 
@@ -155,22 +175,26 @@ Menu:
 
 The wizard asks you step-by-step:
 
+* egress backend by number: v2rayA system-tun or WireGuard
 * primary NIC selection (used to discover local server IP)
 * edge mode: `gre` or `direct`
 * GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
 * Forti/edge next-hop IP only when direct mode is selected; the server default gateway is suggested automatically
 * one or more LAN CIDRs (validated: correct format, no duplicates, no overlap)
 * MSS clamp only when GRE mode is selected
-* v2rayA GUI port (default 2017)
+* v2rayA GUI port (default 2017) only for v2rayA mode
+* WireGuard interface/config source only for WireGuard mode
 
 At the end it:
 
 * saves config to `/opt/v2raytge/config.env`
 * prints the **edge device** tunnel + routing requirements
-* Step 0 checks whether `tun0` exists and guides v2rayA setup if missing:
+* In v2rayA mode, Step 0 checks whether `tun0` exists and guides v2rayA setup if missing:
 
   * if `tun0` is missing, wizard shows full v2rayA steps and asks re-check before continuing
 * asks if you want to activate immediately
+
+In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
 
 ---
 

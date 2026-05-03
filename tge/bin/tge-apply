@@ -30,10 +30,16 @@ log(){ echo "[tge-apply] $*"; }
 
 # Defaults (if config doesn't contain them for any reason)
 GRE_IF="${GRE_IF:-gre-egress}"
+TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
 TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 PRIMARY_NIC="${PRIMARY_NIC:-}"
 DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
-TUN_IF="${TUN_IF:-tun0}"
+WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
+if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
+  TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
+else
+  TUN_IF="${TUN_IF:-tun0}"
+fi
 V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
@@ -46,6 +52,13 @@ case "$TGE_EDGE_MODE" in
     ;;
   *)
     log "ERROR: invalid TGE_EDGE_MODE=$TGE_EDGE_MODE (use: gre|direct)."
+    exit 2
+    ;;
+esac
+case "$TGE_EGRESS_MODE" in
+  v2raya_tun|wireguard) ;;
+  *)
+    log "ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard)."
     exit 2
     ;;
 esac
@@ -85,6 +98,19 @@ sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null
 sysctl -w "net.ipv4.conf.${EDGE_IF}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${TUN_IF}.rp_filter=0"  >/dev/null || true
+
+# Clean stale rules from a previous egress interface when switching modes
+# (for example tun0 -> wg0). This is targeted and does not flush chains.
+if [[ "$TUN_IF" != "tun0" ]]; then
+  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE"
+  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE_ID"
+  safe_iptables_del_forward "$EDGE_IF" "tun0" || true
+  if [[ -n "${LAN_CIDRS:-}" ]]; then
+    for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
+      safe_iptables_del_nat "$cidr" "tun0" || true
+    done
+  fi
+fi
 
 # 2) rt_tables ensure (append-only if missing)
 ensure_rt_table "$V2RAY_TABLE_ID" "$V2RAY_TABLE"

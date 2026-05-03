@@ -12,3 +12,17 @@ journalctl -u tge-apply.service -b --no-pager -n 120 || true
 echo
 echo "--- docker (v2rayA) ---"
 docker ps | egrep -i 'v2ray|v2raya' || true
+echo
+echo "--- WireGuard ---"
+wg show 2>/dev/null || true
+systemctl status 'wg-quick@*' --no-pager -l 2>/dev/null || true
+echo
+echo "--- ip rules ---"
+ip -o rule show || true
+echo
+echo "--- routes (v2ray table) ---"
+ip route show table v2ray 2>/dev/null || ip route show table 100 2>/dev/null || true
+echo
+echo "--- iptables FORWARD/NAT ---"
+iptables -S FORWARD || true
+iptables -t nat -S POSTROUTING || true

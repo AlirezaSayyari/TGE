@@ -14,7 +14,7 @@ if [[ -r "$META_FILE" ]]; then
 fi
 
 need_root
-default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_direct_edge_gw="${DIRECT_EDGE_GW:-}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"
+default_egress_mode="${TGE_EGRESS_MODE:-v2raya_tun}"; default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_direct_edge_gw="${DIRECT_EDGE_GW:-}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"; default_wg_if="${WIREGUARD_IF:-wg0}"
 
 preview_nic="$(guess_primary_nic)"
 [[ -n "$preview_nic" ]] || preview_nic="eth0"
@@ -66,6 +66,119 @@ tun0_precheck_or_guide(){
   done
 }
 
+choose_number(){
+  local prompt="$1" default_choice="$2" choice max
+  shift 2
+  max="$#"
+  echo "$prompt" >&2
+  local i=1
+  for item in "$@"; do
+    echo "  $i) $item" >&2
+    i=$((i+1))
+  done
+  while true; do
+    read -r -p "Select [${default_choice}]: " choice >&2
+    choice="${choice:-$default_choice}"
+    if [[ "$choice" =~ ^[0-9]+$ ]] && (( choice >= 1 && choice <= max )); then
+      echo "$choice"
+      return 0
+    fi
+    echo "ERROR: invalid choice. enter a number between 1 and $max." >&2
+  done
+}
+
+validate_ifname(){
+  local name="$1"
+  [[ "$name" =~ ^[a-zA-Z0-9_.:-]{1,15}$ ]] || { echo "ERROR: invalid interface name: $name"; exit 1; }
+}
+
+normalize_wireguard_config(){
+  local src="$1" dst="$2"
+  python3 - "$src" "$dst" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src, encoding="utf-8").read().splitlines()
+out = []
+in_interface = False
+interface_seen = False
+table_seen = False
+ipv4_address_seen = False
+for line in lines:
+    stripped = line.strip()
+    lower = stripped.lower()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        if in_interface and not table_seen:
+            out.append("Table = off")
+        in_interface = lower == "[interface]"
+        if in_interface:
+            interface_seen = True
+            table_seen = False
+        out.append(line)
+        continue
+    if in_interface:
+        if lower.startswith("table"):
+            out.append("Table = off")
+            table_seen = True
+            continue
+        if lower.startswith("dns"):
+            continue
+        if lower.startswith("address"):
+            key, sep, value = line.partition("=")
+            if sep:
+                ipv4 = [part.strip() for part in value.split(",") if ":" not in part and part.strip()]
+                if ipv4:
+                    ipv4_address_seen = True
+                    out.append(f"{key.strip()} = {', '.join(ipv4)}")
+                    continue
+                continue
+    out.append(line)
+if in_interface and not table_seen:
+    out.append("Table = off")
+if not interface_seen:
+    raise SystemExit("ERROR: WireGuard config has no [Interface] section")
+if not ipv4_address_seen:
+    raise SystemExit("ERROR: WireGuard config has no IPv4 Address in [Interface]")
+open(dst, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+}
+
+wireguard_config_wizard(){
+  local source_choice wg_src tmp
+  read -r -p "WireGuard interface name [${default_wg_if}]: " wireguard_if
+  wireguard_if="${wireguard_if:-$default_wg_if}"
+  validate_ifname "$wireguard_if"
+  wireguard_conf="/etc/wireguard/${wireguard_if}.conf"
+
+  source_choice="$(choose_number "WireGuard configuration source:" 1 \
+    "Use existing ${wireguard_conf}" \
+    "Paste WireGuard config now")"
+
+  case "$source_choice" in
+    1)
+      [[ -f "$wireguard_conf" ]] || { echo "ERROR: not found: $wireguard_conf"; exit 1; }
+      tmp="$(mktemp)"
+      normalize_wireguard_config "$wireguard_conf" "$tmp"
+      install -m 600 "$tmp" "$wireguard_conf"
+      rm -f "$tmp"
+      ;;
+    2)
+      mkdir -p /etc/wireguard
+      tmp="$(mktemp)"
+      echo "Paste WireGuard config. Type END on a new line when finished:"
+      while IFS= read -r line; do
+        [[ "$line" == "END" ]] && break
+        printf '%s\n' "$line" >> "$tmp"
+      done
+      normalize_wireguard_config "$tmp" "$wireguard_conf"
+      chmod 600 "$wireguard_conf"
+      rm -f "$tmp"
+      ;;
+  esac
+
+  echo "[wizard] WireGuard config prepared: $wireguard_conf"
+  echo "[wizard] enforced IPv4-only Address, removed DNS lines, and set Table = off."
+}
+
 calc_peer_ip(){
   python3 - "$1" <<'PY'
 import ipaddress, sys
@@ -96,8 +209,21 @@ default_gateway_for_iface(){
 
 echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 
-# Step 0: tun0 readiness
-tun0_precheck_or_guide
+case "$default_egress_mode" in
+  wireguard) default_egress_choice=2 ;;
+  *) default_egress_choice=1 ;;
+esac
+egress_choice="$(choose_number "Egress backend:" "$default_egress_choice" \
+  "v2rayA system-tun (tun0)" \
+  "WireGuard wg-quick (wg0)")"
+case "$egress_choice" in
+  1) egress_mode="v2raya_tun"; tun_if="tun0"; wireguard_if="" ;;
+  2) egress_mode="wireguard"; wireguard_config_wizard; tun_if="$wireguard_if" ;;
+esac
+
+if [[ "$egress_mode" == "v2raya_tun" ]]; then
+  tun0_precheck_or_guide
+fi
 
 
 # 4.1 NIC and edge-mode selection
@@ -110,15 +236,17 @@ validate_iface_exists "$nic"
 local_ip="$(iface_ipv4 "$nic")"
 echo "Local IPv4 on $nic: $local_ip"
 
-while true; do
-  read -r -p "Edge mode: use GRE tunnel or direct primary NIC? [${default_edge_mode}] (gre/direct): " edge_mode
-  edge_mode="${edge_mode:-$default_edge_mode}"
-  edge_mode="$(echo "$edge_mode" | tr '[:upper:]' '[:lower:]')"
-  case "$edge_mode" in
-    gre|direct) break ;;
-    *) echo "ERROR: invalid edge mode. use: gre or direct" ;;
-  esac
-done
+case "$default_edge_mode" in
+  direct) default_edge_choice=2 ;;
+  *) default_edge_choice=1 ;;
+esac
+edge_choice="$(choose_number "Edge mode:" "$default_edge_choice" \
+  "GRE tunnel" \
+  "Direct primary NIC")"
+case "$edge_choice" in
+  1) edge_mode="gre" ;;
+  2) edge_mode="direct" ;;
+esac
 
 gre_local_ip=""
 gre_remote_ip=""
@@ -202,17 +330,22 @@ if [[ "$edge_mode" == "gre" ]]; then
   validate_int_range "$mss" 536 1460
 fi
 
-# v2rayA UI port
-read -r -p "Confirm/Enter v2rayA GUI port [${default_gui_port}]: " v2raya_port
-v2raya_port="${v2raya_port:-$default_gui_port}"
-validate_int_range "$v2raya_port" 1 65535
+v2raya_port="$default_gui_port"
+if [[ "$egress_mode" == "v2raya_tun" ]]; then
+  # v2rayA UI port
+  read -r -p "Confirm/Enter v2rayA GUI port [${default_gui_port}]: " v2raya_port
+  v2raya_port="${v2raya_port:-$default_gui_port}"
+  validate_int_range "$v2raya_port" 1 65535
+fi
 
 # Save config
 cat > "$CFG" <<EOF
 # V2rayTGE configuration
+TGE_EGRESS_MODE="$egress_mode"
 TGE_EDGE_MODE="$edge_mode"
 PRIMARY_NIC="$nic"
 DIRECT_EDGE_GW="$direct_edge_gw"
+WIREGUARD_IF="$wireguard_if"
 GRE_IF="gre-egress"
 GRE_LOCAL_IP="$gre_local_ip"
 GRE_REMOTE_IP="$gre_remote_ip"
@@ -222,7 +355,7 @@ LAN_CIDRS="$(join_by_comma "${lan_list[@]}")"
 MSS_CLAMP="$mss"
 V2RAY_TABLE="v2ray"
 V2RAY_TABLE_ID="100"
-TUN_IF="tun0"
+TUN_IF="$tun_if"
 V2RAYA_GUI_PORT="$v2raya_port"
 EOF
 
@@ -259,17 +392,22 @@ else
 fi
 for c in "${lan_list[@]}"; do echo "   - $c"; done
 echo
-echo "=== v2rayA GUI ==="
-echo "Open: http://$local_ip:$v2raya_port  (or server main IP)"
-echo "Configure outbound and enable."
-echo
-
-# 4.7 tun0 check
-if ! ip link show tun0 >/dev/null 2>&1; then
-  echo "NOTE: tun0 is not present yet. Apply will run automatically when tun0 appears (systemd path+timer)."
-  echo "You can also run: sudo tge (Activate) after v2rayA is configured."
+if [[ "$egress_mode" == "v2raya_tun" ]]; then
+  echo "=== v2rayA GUI ==="
+  echo "Open: http://$local_ip:$v2raya_port  (or server main IP)"
+  echo "Configure outbound and enable system-tun transparent proxy."
+  echo
+  if ! ip link show tun0 >/dev/null 2>&1; then
+    echo "NOTE: tun0 is not present yet. Apply will run automatically when tun0 appears (systemd path+timer)."
+    echo "You can also run: sudo tge (Activate) after v2rayA is configured."
+  else
+    echo "tun0 is present. You can Activate now."
+  fi
 else
-  echo "tun0 is present. You can Activate now."
+  echo "=== WireGuard ==="
+  echo "Interface: $wireguard_if"
+  echo "Config: /etc/wireguard/${wireguard_if}.conf"
+  echo "TGE will use $wireguard_if as the egress tunnel and will not start v2rayA in this mode."
 fi
 
 # 4.9 ask activate

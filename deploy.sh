@@ -504,7 +504,7 @@ main(){
 
   apt_update
   log "Installing base dependencies..."
-  apt_install ca-certificates curl jq iproute2 iptables lsof >/dev/null
+  apt_install ca-certificates curl jq iproute2 iptables lsof wireguard-tools >/dev/null
 
   # Required order: Docker -> backend preflight -> Compose -> deploy/start v2rayA -> finalize TGE install.
   ensure_docker

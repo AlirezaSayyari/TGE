@@ -1,6 +1,7 @@
 # Edge Device Examples
 
 V2rayTGE supports two edge-facing modes while using one server NIC. The wizard prints the exact values to use.
+For egress, TGE can use either v2rayA system-tun (`tun0`) or WireGuard (`wg0`).
 
 ## Mode 1: GRE
 
@@ -17,7 +18,7 @@ Configure on the edge device:
 Traffic path:
 
 ```text
-LAN -> Edge Device -> GRE tunnel -> V2rayTGE gre-egress -> tun0 -> Internet
+LAN -> Edge Device -> GRE tunnel -> V2rayTGE gre-egress -> tun0/wg0 -> Internet
 ```
 
 ## Mode 2: Direct Primary NIC
@@ -35,11 +36,26 @@ Configure on the edge device:
 Traffic path:
 
 ```text
-LAN -> Edge Device -> V2rayTGE primary NIC -> tun0 -> Internet
+LAN -> Edge Device -> V2rayTGE primary NIC -> tun0/wg0 -> Internet
+```
+
+## WireGuard Egress Notes
+
+When WireGuard is selected:
+
+- The TGE server uses a `wg-quick` interface such as `wg0`.
+- The WireGuard config must use `Table = off`; the wizard enforces this so the server default route stays unchanged.
+- IPv4-only WireGuard `Address` is recommended for this gateway path.
+- The edge device PBR does not change: send LAN traffic toward the selected TGE edge path.
+
+Traffic path:
+
+```text
+LAN -> Edge Device -> V2rayTGE edge -> wg0 -> WireGuard server -> Internet
 ```
 
 ## Server NIC Layout
 
-- Primary NIC: management access, v2rayA GUI, and edge traffic.
+- Primary NIC: management access, optional v2rayA GUI, WireGuard endpoint traffic, and edge traffic.
 
 The wizard stores this as `PRIMARY_NIC` in `/opt/v2raytge/config.env`.
