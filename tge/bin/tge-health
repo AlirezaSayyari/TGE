@@ -62,6 +62,9 @@ wg_recent_handshake(){
   now="$(date +%s)"
   wg show "$TUN_IF" latest-handshakes 2>/dev/null | awk -v now="$now" '{ if ($2 > 0 && now - $2 <= 180) ok=1 } END { exit(ok ? 0 : 1) }'
 }
+wg_allowed_ips_default(){
+  wg show "$TUN_IF" allowed-ips 2>/dev/null | grep -qw '0.0.0.0/0'
+}
 wg_service_active(){
   systemctl is-active --quiet "wg-quick@${WIREGUARD_IF}"
 }
@@ -95,6 +98,7 @@ chk "egress interface exists" link_exists "$TUN_IF"
 if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
   chk "WireGuard service active" wg_service_active
   chk "WireGuard recent handshake" wg_recent_handshake
+  chk "WireGuard AllowedIPs includes 0.0.0.0/0" wg_allowed_ips_default
 fi
 chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
