@@ -99,18 +99,57 @@ sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null
 sysctl -w "net.ipv4.conf.${EDGE_IF}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${TUN_IF}.rp_filter=0"  >/dev/null || true
 
-# Clean stale rules from a previous egress interface when switching modes
-# (for example tun0 -> wg0). This is targeted and does not flush chains.
-if [[ "$TUN_IF" != "tun0" ]]; then
-  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE"
-  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE_ID"
-  safe_iptables_del_forward "$EDGE_IF" "tun0" || true
+delete_rule_pref_if_matching(){
+  local pref="$1" regex="$2" line
+  while true; do
+    line="$(ip -o rule show 2>/dev/null | awk -v p="${pref}:" '$1==p{print; exit}')"
+    [[ -n "$line" ]] || return 0
+    echo "$line" | grep -qE "$regex" || return 0
+    ip rule del pref "$pref" || true
+  done
+}
+
+cleanup_stale_singbox_rules(){
+  local found=0
+  if ip -o rule show 2>/dev/null | grep -qE '^(9000:|9001:|9002:|9010:).*(lookup 2022|goto 9010|suppress_prefixlength|nop)'; then
+    found=1
+  fi
+  delete_rule_pref_if_matching 9000 'lookup 2022'
+  delete_rule_pref_if_matching 9001 'goto 9010'
+  delete_rule_pref_if_matching 9002 '(lookup 2022|lookup main suppress_prefixlength|suppress_prefixlength)'
+  delete_rule_pref_if_matching 9010 'nop'
+  ip route flush table 2022 >/dev/null 2>&1 || true
+  [[ "$found" -eq 0 ]] || log "INFO: removed stale sing-box policy rules/table 2022."
+}
+
+delete_mangle_rule(){
+  while iptables -t mangle -D FORWARD "$@" 2>/dev/null; do :; done
+}
+
+cleanup_stale_egress_if(){
+  local old_if="$1" cidr
+  [[ "$old_if" != "$TUN_IF" ]] || return 0
+  safe_ip_rule_del 110 "iif $old_if lookup $V2RAY_TABLE"
+  safe_ip_rule_del 110 "iif $old_if lookup $V2RAY_TABLE_ID"
+  safe_iptables_del_forward "$EDGE_IF" "$old_if" || true
   if [[ -n "${LAN_CIDRS:-}" ]]; then
     for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
-      safe_iptables_del_nat "$cidr" "tun0" || true
+      safe_iptables_del_nat "$cidr" "$old_if" || true
     done
   fi
-fi
+  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+    delete_mangle_rule -i "$GRE_IF" -o "$old_if" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
+  fi
+  delete_mangle_rule -o "$old_if" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+}
+
+# Clean leftovers from experimental sing-box TUN tests and from previous
+# egress interfaces when switching between v2rayA tun0 and WireGuard wg0.
+# This is targeted and does not flush chains, default routes, or direct mode
+# next-hop routes.
+cleanup_stale_singbox_rules
+cleanup_stale_egress_if "tun0"
+cleanup_stale_egress_if "wg0"
 
 # 2) rt_tables ensure (append-only if missing)
 ensure_rt_table "$V2RAY_TABLE_ID" "$V2RAY_TABLE"
@@ -157,6 +196,13 @@ if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     ip rule add pref 101 to "$GRE_SUBNET" lookup main
 fi
 
+rule110_line="$(ip -o rule show 2>/dev/null | awk '$1=="110:"{print; exit}')"
+if [[ -n "$rule110_line" ]] \
+  && ! echo "$rule110_line" | grep -qE "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
+  && echo "$rule110_line" | grep -qE "lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"; then
+  log "INFO: pref 110 belongs to TGE but targets a different egress interface; replacing. line=[$rule110_line]"
+  ip rule del pref 110 || true
+fi
 ensure_rule_pref 110 "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
   ip rule add pref 110 iif "$TUN_IF" lookup "$V2RAY_TABLE"
 
@@ -164,7 +210,7 @@ ip route flush cache || true
 
 # 5) iptables ensure-only (NO flush, NO policy change)
 
-# NAT: MASQUERADE each LAN CIDR out of tun0
+# NAT: MASQUERADE each LAN CIDR out of the selected egress interface.
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
     iptables_ensure nat POSTROUTING "-s $cidr -o $TUN_IF -j MASQUERADE"

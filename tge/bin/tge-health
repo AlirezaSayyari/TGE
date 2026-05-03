@@ -74,11 +74,15 @@ gre_addr_match(){
 gre_mtu_match(){
   ip -o link show dev "$GRE_IF" 2>/dev/null | grep -q "mtu ${GRE_MTU:-1476}"
 }
+stale_singbox_rules_absent(){
+  ! ip -o rule show 2>/dev/null | grep -qE '^(9000:|9001:|9002:|9010:).*(lookup 2022|goto 9010|suppress_prefixlength|nop)'
+}
 if [[ "$desired" == "legacy" ]]; then
   chk "iptables legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
 else
   echo "[WARN] nft mode is selected (advanced/experimental)."
 fi
+chk "stale sing-box policy rules absent" stale_singbox_rules_absent
 if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "gre exists" link_exists "$GRE_IF"
   chk "gre local/remote match config" gre_params_match
