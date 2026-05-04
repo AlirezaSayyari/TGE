@@ -44,6 +44,8 @@ V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
 GRE_MTU="${GRE_MTU:-1476}"
+WG_HANDSHAKE_MAX_AGE="${WG_HANDSHAKE_MAX_AGE:-180}"
+WG_RESTART_COOLDOWN="${WG_RESTART_COOLDOWN:-300}"
 case "$TGE_EDGE_MODE" in
   gre) EDGE_IF="$GRE_IF" ;;
   direct)
@@ -67,6 +69,28 @@ wireguard_runtime_allowedips_ok(){
   wg show "$TUN_IF" allowed-ips 2>/dev/null | grep -qw '0.0.0.0/0'
 }
 
+wireguard_recent_handshake_ok(){
+  local now
+  now="$(date +%s)"
+  wg show "$TUN_IF" latest-handshakes 2>/dev/null | awk -v now="$now" -v max_age="$WG_HANDSHAKE_MAX_AGE" '
+    $2 > 0 && now - $2 <= max_age { ok=1 }
+    END { exit(ok ? 0 : 1) }
+  '
+}
+
+wireguard_restart_allowed(){
+  local stamp_dir="/run/v2raytge" stamp_file now last=0
+  stamp_file="${stamp_dir}/wg-${WIREGUARD_IF}.restart"
+  now="$(date +%s)"
+  mkdir -p "$stamp_dir"
+  [[ -r "$stamp_file" ]] && read -r last < "$stamp_file" || true
+  if (( now - last < WG_RESTART_COOLDOWN )); then
+    return 1
+  fi
+  printf '%s\n' "$now" > "$stamp_file"
+  return 0
+}
+
 ensure_wireguard_gateway_config(){
   [[ "$TGE_EGRESS_MODE" == "wireguard" ]] || return 0
   local conf="/etc/wireguard/${WIREGUARD_IF}.conf" tmp changed=0 needs_restart=0
@@ -88,13 +112,16 @@ table_seen = False
 ipv4_address_seen = False
 peer_seen = False
 peer_allowedips_seen = False
+peer_keepalive_seen = False
 
 def close_section():
-    global table_seen, peer_allowedips_seen
+    global table_seen, peer_allowedips_seen, peer_keepalive_seen
     if in_interface and not table_seen:
         out.append("Table = off")
     if in_peer and not peer_allowedips_seen:
         out.append("AllowedIPs = 0.0.0.0/0")
+    if in_peer and not peer_keepalive_seen:
+        out.append("PersistentKeepalive = 25")
 
 for line in lines:
     stripped = line.strip()
@@ -109,6 +136,7 @@ for line in lines:
         if in_peer:
             peer_seen = True
             peer_allowedips_seen = False
+            peer_keepalive_seen = False
         out.append(line)
         continue
     if in_interface:
@@ -129,6 +157,10 @@ for line in lines:
     if in_peer and lower.startswith("allowedips"):
         out.append("AllowedIPs = 0.0.0.0/0")
         peer_allowedips_seen = True
+        continue
+    if in_peer and lower.startswith("persistentkeepalive"):
+        out.append("PersistentKeepalive = 25")
+        peer_keepalive_seen = True
         continue
     out.append(line)
 
@@ -154,6 +186,13 @@ PY
     if ! wireguard_runtime_allowedips_ok; then
       needs_restart=1
       log "INFO: WireGuard runtime is missing AllowedIPs 0.0.0.0/0; restarting wg-quick@${WIREGUARD_IF}."
+    elif ! wireguard_recent_handshake_ok; then
+      if wireguard_restart_allowed; then
+        needs_restart=1
+        log "INFO: WireGuard handshake is stale; restarting wg-quick@${WIREGUARD_IF}."
+      else
+        log "WARN: WireGuard handshake is stale; restart skipped due to cooldown (${WG_RESTART_COOLDOWN}s)."
+      fi
     fi
   else
     needs_restart=1

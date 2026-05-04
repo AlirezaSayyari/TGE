@@ -106,6 +106,7 @@ table_seen = False
 ipv4_address_seen = False
 peer_seen = False
 peer_allowedips_seen = False
+peer_keepalive_seen = False
 for line in lines:
     stripped = line.strip()
     lower = stripped.lower()
@@ -114,6 +115,8 @@ for line in lines:
             out.append("Table = off")
         if in_peer and not peer_allowedips_seen:
             out.append("AllowedIPs = 0.0.0.0/0")
+        if in_peer and not peer_keepalive_seen:
+            out.append("PersistentKeepalive = 25")
         in_interface = lower == "[interface]"
         in_peer = lower == "[peer]"
         if in_interface:
@@ -122,6 +125,7 @@ for line in lines:
         if in_peer:
             peer_seen = True
             peer_allowedips_seen = False
+            peer_keepalive_seen = False
         out.append(line)
         continue
     if in_interface:
@@ -144,11 +148,17 @@ for line in lines:
         out.append("AllowedIPs = 0.0.0.0/0")
         peer_allowedips_seen = True
         continue
+    if in_peer and lower.startswith("persistentkeepalive"):
+        out.append("PersistentKeepalive = 25")
+        peer_keepalive_seen = True
+        continue
     out.append(line)
 if in_interface and not table_seen:
     out.append("Table = off")
 if in_peer and not peer_allowedips_seen:
     out.append("AllowedIPs = 0.0.0.0/0")
+if in_peer and not peer_keepalive_seen:
+    out.append("PersistentKeepalive = 25")
 if not interface_seen:
     raise SystemExit("ERROR: WireGuard config has no [Interface] section")
 if not ipv4_address_seen:
@@ -196,7 +206,7 @@ EOF
   esac
 
   echo "[wizard] WireGuard config prepared: $wireguard_conf"
-  echo "[wizard] enforced IPv4-only Address, removed DNS lines, set Table = off, and set AllowedIPs = 0.0.0.0/0."
+  echo "[wizard] enforced IPv4-only Address, removed DNS lines, set Table = off, AllowedIPs = 0.0.0.0/0, and PersistentKeepalive = 25."
 }
 
 calc_peer_ip(){
