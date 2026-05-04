@@ -63,6 +63,114 @@ case "$TGE_EGRESS_MODE" in
     ;;
 esac
 
+wireguard_runtime_allowedips_ok(){
+  wg show "$TUN_IF" allowed-ips 2>/dev/null | grep -qw '0.0.0.0/0'
+}
+
+ensure_wireguard_gateway_config(){
+  [[ "$TGE_EGRESS_MODE" == "wireguard" ]] || return 0
+  local conf="/etc/wireguard/${WIREGUARD_IF}.conf" tmp changed=0 needs_restart=0
+  if [[ ! -f "$conf" ]]; then
+    log "WARN: WireGuard config not found: $conf"
+    return 0
+  fi
+
+  tmp="$(mktemp)"
+  python3 - "$conf" "$tmp" <<'PY'
+import sys
+src, dst = sys.argv[1], sys.argv[2]
+lines = open(src, encoding="utf-8").read().splitlines()
+out = []
+in_interface = False
+in_peer = False
+interface_seen = False
+table_seen = False
+ipv4_address_seen = False
+peer_seen = False
+peer_allowedips_seen = False
+
+def close_section():
+    global table_seen, peer_allowedips_seen
+    if in_interface and not table_seen:
+        out.append("Table = off")
+    if in_peer and not peer_allowedips_seen:
+        out.append("AllowedIPs = 0.0.0.0/0")
+
+for line in lines:
+    stripped = line.strip()
+    lower = stripped.lower()
+    if stripped.startswith("[") and stripped.endswith("]"):
+        close_section()
+        in_interface = lower == "[interface]"
+        in_peer = lower == "[peer]"
+        if in_interface:
+            interface_seen = True
+            table_seen = False
+        if in_peer:
+            peer_seen = True
+            peer_allowedips_seen = False
+        out.append(line)
+        continue
+    if in_interface:
+        if lower.startswith("table"):
+            out.append("Table = off")
+            table_seen = True
+            continue
+        if lower.startswith("dns"):
+            continue
+        if lower.startswith("address"):
+            key, sep, value = line.partition("=")
+            if sep:
+                ipv4 = [part.strip() for part in value.split(",") if ":" not in part and part.strip()]
+                if ipv4:
+                    ipv4_address_seen = True
+                    out.append(f"{key.strip()} = {', '.join(ipv4)}")
+                continue
+    if in_peer and lower.startswith("allowedips"):
+        out.append("AllowedIPs = 0.0.0.0/0")
+        peer_allowedips_seen = True
+        continue
+    out.append(line)
+
+close_section()
+if not interface_seen:
+    raise SystemExit("ERROR: WireGuard config has no [Interface] section")
+if not ipv4_address_seen:
+    raise SystemExit("ERROR: WireGuard config has no IPv4 Address in [Interface]")
+if not peer_seen:
+    raise SystemExit("ERROR: WireGuard config has no [Peer] section")
+open(dst, "w", encoding="utf-8").write("\n".join(out) + "\n")
+PY
+
+  if ! cmp -s "$conf" "$tmp"; then
+    install -m 600 "$tmp" "$conf"
+    changed=1
+    needs_restart=1
+    log "INFO: healed WireGuard config for gateway mode: $conf"
+  fi
+  rm -f "$tmp"
+
+  if ip link show "$TUN_IF" >/dev/null 2>&1; then
+    if ! wireguard_runtime_allowedips_ok; then
+      needs_restart=1
+      log "INFO: WireGuard runtime is missing AllowedIPs 0.0.0.0/0; restarting wg-quick@${WIREGUARD_IF}."
+    fi
+  else
+    needs_restart=1
+    log "INFO: WireGuard interface $TUN_IF is missing; starting wg-quick@${WIREGUARD_IF}."
+  fi
+
+  if [[ "$needs_restart" -eq 1 ]]; then
+    if [[ "$changed" -eq 1 ]] || ip link show "$TUN_IF" >/dev/null 2>&1; then
+      systemctl restart "wg-quick@${WIREGUARD_IF}" || log "WARN: failed to restart wg-quick@${WIREGUARD_IF}."
+    else
+      systemctl start "wg-quick@${WIREGUARD_IF}" || log "WARN: failed to start wg-quick@${WIREGUARD_IF}."
+    fi
+  fi
+}
+
+ensure_wireguard_gateway_config
+
 # Derive GRE subnet from configured tunnel CIDR (e.g. 10.255.255.6/30 -> 10.255.255.4/30)
 if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
   GRE_SUBNET="$(cidr_network "$GRE_TUN_IP")"
