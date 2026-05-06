@@ -4,7 +4,7 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue?style=for-the-badge)
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
 
-# V2rayTGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA Egress Gateway
+# TGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA/Wiregaurd Egress Gateway
 
 V2rayTGE is a **production-safe** installer + CLI toolkit that turns an Ubuntu server into an **Egress Gateway**.
 It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
