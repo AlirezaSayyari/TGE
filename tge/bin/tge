@@ -5,23 +5,239 @@ ETC_DIR="/opt/v2raytge"
 CFG="$ETC_DIR/config.env"
 LOG_DIR="/var/log/v2raytge"
 META_FILE="$ETC_DIR/meta.env"
+BACKUP_DIR="/var/backups/v2raytge"
+REPO_OWNER="AlirezaSayyari"
+REPO_NAME="V2rayTGE"
+REPO_BRANCH="${TGE_CLI_BRANCH:-main}"
+UPDATE_CACHE_FILE="/tmp/v2raytge-latest-version"
+UPDATE_CACHE_TTL=3600
 
-mkdir -p "$ETC_DIR" "$LOG_DIR"
+mkdir -p "$ETC_DIR" "$LOG_DIR" 2>/dev/null || true
 
 if [[ -r "$META_FILE" ]]; then
   # shellcheck disable=SC1090
   . "$META_FILE"
 fi
+if [[ -r "$ETC_DIR/tge-lib.sh" ]]; then
+  # shellcheck disable=SC1090
+  . "$ETC_DIR/tge-lib.sh"
+fi
 
 CLI_VERSION="${TGE_CLI_VERSION:-v1.0.0}"
+REPO_BRANCH="${TGE_CLI_BRANCH:-$REPO_BRANCH}"
 LAST_ERROR=""
+FIRST_RENDER=1
+
+pause(){ echo "Press Enter..."; read -r; }
+
+secure_config_file() {
+  if [[ -f "$CFG" ]]; then
+    chown root:root "$CFG" 2>/dev/null || true
+    chmod 600 "$CFG"
+  fi
+}
+
+backup_config() {
+  local reason="${1:-manual}" timestamp backup_file
+  if [[ ! -f "$CFG" ]]; then
+    echo "No $CFG found; nothing to back up."
+    return 0
+  fi
+  timestamp="$(date +%Y%m%d-%H%M%S)"
+  backup_file="$BACKUP_DIR/config.env.$timestamp.$reason.bak"
+  mkdir -p "$BACKUP_DIR"
+  cp -p "$CFG" "$backup_file"
+  chmod 600 "$backup_file"
+  echo "Backup created: $backup_file"
+}
+
+latest_config_backup() {
+  ls -1t "$BACKUP_DIR"/config.env.*.bak 2>/dev/null | head -n 1
+}
+
+list_config_backups() {
+  if ! ls "$BACKUP_DIR"/config.env.*.bak >/dev/null 2>&1; then
+    echo "No V2rayTGE config backups found in $BACKUP_DIR."
+    return 0
+  fi
+  ls -1t "$BACKUP_DIR"/config.env.*.bak
+}
+
+restore_latest_config_backup() {
+  local backup_file answer
+  backup_file="$(latest_config_backup)"
+  if [[ -z "$backup_file" ]]; then
+    echo "No V2rayTGE config backup was found in $BACKUP_DIR."
+    return 1
+  fi
+  echo "Latest backup: $backup_file"
+  read -r -p "Restore this backup to $CFG? (yes/no) [no]: " answer
+  if ! [[ "${answer:-no}" =~ ^(yes|y|Y)$ ]]; then
+    echo "Restore cancelled."
+    return 0
+  fi
+  backup_config "pre-restore"
+  cp "$backup_file" "$CFG"
+  secure_config_file
+  echo "Configuration restored from $backup_file."
+  echo "Use Activate Egress System to apply it."
+}
+
+installed_version() {
+  if [[ -r "$META_FILE" ]]; then
+    # shellcheck disable=SC1090
+    . "$META_FILE"
+    printf "%s" "${TGE_CLI_VERSION:-unknown}"
+  else
+    printf "unknown"
+  fi
+}
+
+normalize_version() {
+  local version="$1"
+  version="${version#v}"
+  version="${version#V}"
+  printf "%s" "$version"
+}
+
+version_gt() {
+  local left right
+  left="$(normalize_version "$1")"
+  right="$(normalize_version "$2")"
+  if command -v sort >/dev/null 2>&1; then
+    [[ "$(printf '%s\n%s\n' "$right" "$left" | sort -V | tail -n 1)" == "$left" && "$left" != "$right" ]]
+  else
+    [[ "$1" != "$2" ]]
+  fi
+}
+
+fetch_latest_version() {
+  local response latest_release latest_tag latest
+  command -v curl >/dev/null 2>&1 || return 1
+  response="$(curl -fsSL --connect-timeout 3 --max-time 8 "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" 2>/dev/null || true)"
+  latest_release="$(printf "%s" "$response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  response="$(curl -fsSL --connect-timeout 3 --max-time 8 "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/tags" 2>/dev/null || true)"
+  latest_tag="$(printf "%s" "$response" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  latest="$latest_release"
+  if [[ -z "$latest" ]] || { [[ -n "$latest_tag" ]] && version_gt "$latest_tag" "$latest"; }; then
+    latest="$latest_tag"
+  fi
+  [[ -n "$latest" ]] || return 1
+  printf "%s" "$latest"
+}
+
+latest_version_cached() {
+  local now cache_mtime latest
+  now="$(date +%s)"
+  if [[ -f "$UPDATE_CACHE_FILE" ]]; then
+    cache_mtime="$(stat -c %Y "$UPDATE_CACHE_FILE" 2>/dev/null || echo 0)"
+    if (( now - cache_mtime < UPDATE_CACHE_TTL )); then
+      tr -d '[:space:]' < "$UPDATE_CACHE_FILE"
+      return 0
+    fi
+  fi
+  latest="$(fetch_latest_version || true)"
+  [[ -n "$latest" ]] || return 1
+  printf "%s" "$latest" > "$UPDATE_CACHE_FILE" 2>/dev/null || true
+  printf "%s" "$latest"
+}
+
+latest_version_fresh() {
+  local latest
+  latest="$(fetch_latest_version || true)"
+  [[ -n "$latest" ]] || return 1
+  printf "%s" "$latest" > "$UPDATE_CACHE_FILE" 2>/dev/null || true
+  printf "%s" "$latest"
+}
+
+version_summary() {
+  local mode="${1:-cached}" current latest
+  current="$(installed_version)"
+  if [[ "$mode" == "fresh" ]]; then
+    latest="$(latest_version_fresh || true)"
+    [[ -n "$latest" ]] || latest="$(latest_version_cached || true)"
+  else
+    latest="$(latest_version_cached || true)"
+  fi
+  echo "Installed version: $current"
+  if [[ -n "$latest" ]]; then
+    echo "Latest version:    $latest"
+    if [[ "$current" == "unknown" ]]; then
+      echo "Update status:     Could not compare"
+    elif version_gt "$latest" "$current"; then
+      echo "Update status:     Upgrade Available"
+    else
+      echo "Update status:     Up to date"
+    fi
+  else
+    echo "Latest version:    unavailable"
+    echo "Update status:     Could not check GitHub"
+  fi
+}
+
+upgrade_tge() {
+  local current latest source_url tmp_dir source_dir answer target_raw installed_after_upgrade
+  require_root || return 0
+  command -v curl >/dev/null 2>&1 || { echo "curl is required for upgrade."; return 1; }
+  command -v tar >/dev/null 2>&1 || { echo "tar is required for upgrade."; return 1; }
+
+  current="$(installed_version)"
+  latest="$(fetch_latest_version || true)"
+  if [[ -z "$latest" ]]; then
+    echo "Could not find a GitHub release/tag. Falling back to branch '$REPO_BRANCH'."
+    latest="$REPO_BRANCH"
+    source_url="https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/$REPO_BRANCH.tar.gz"
+    target_raw="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_BRANCH"
+  else
+    source_url="https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/tags/$latest.tar.gz"
+    target_raw="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$latest"
+  fi
+
+  echo "Installed version: $current"
+  echo "Target version:    $latest"
+  if [[ "$current" != "unknown" && "$latest" != "$REPO_BRANCH" ]] && ! version_gt "$latest" "$current"; then
+    read -r -p "No newer version detected. Reinstall target anyway? (yes/no) [no]: " answer
+    [[ "${answer:-no}" =~ ^(yes|y|Y)$ ]] || { echo "Upgrade cancelled."; return 0; }
+  else
+    read -r -p "Upgrade V2rayTGE now? (yes/no) [yes]: " answer
+    [[ "${answer:-yes}" =~ ^(yes|y|Y)$ ]] || { echo "Upgrade cancelled."; return 0; }
+  fi
+
+  backup_config "pre-upgrade"
+  tmp_dir="$(mktemp -d)"
+  trap 'rm -rf "$tmp_dir"' RETURN
+  echo "Downloading $source_url"
+  curl -fsSL "$source_url" | tar -xz -C "$tmp_dir"
+  source_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
+  if [[ -z "$source_dir" || ! -f "$source_dir/deploy.sh" ]]; then
+    echo "Downloaded archive does not contain deploy.sh."
+    return 1
+  fi
+
+  echo "Installing updated V2rayTGE files..."
+  (cd "$source_dir" && REPO_RAW="$target_raw" GH_REPO="$REPO_OWNER/$REPO_NAME" bash deploy.sh)
+  rm -f "$UPDATE_CACHE_FILE" 2>/dev/null || true
+  installed_after_upgrade="$(installed_version)"
+  if [[ "$latest" != "$REPO_BRANCH" && "$installed_after_upgrade" != "$latest" ]]; then
+    echo "WARNING: Upgrade target was $latest but installed version is $installed_after_upgrade."
+    echo "The published tag/release may contain outdated metadata."
+    return 1
+  fi
+  echo "Upgrade complete. $CFG was preserved."
+}
 
 menu() {
   clear
   echo "============================================================"
   echo " V2rayTGE - Traffic Gateway Egress (CLI)"
-  echo " Version: ${CLI_VERSION}"
   echo "============================================================"
+  if [[ "$FIRST_RENDER" -eq 1 ]]; then
+    version_summary fresh
+    FIRST_RENDER=0
+  else
+    version_summary
+  fi
+  echo "----------------------------------------"
   if [[ -n "$LAST_ERROR" ]]; then
     echo "------------------------ Last Error ------------------------"
     echo "$LAST_ERROR"
@@ -29,10 +245,13 @@ menu() {
   fi
   echo "1) Help & Introduction"
   echo "2) Config Egress System (Wizard)"
-  echo "3) Activate Egress System"
-  echo "4) Deactivate Egress System"
-  echo "5) Health Check"
-  echo "6) Log"
+  echo "3) Edit Egress System Configuration"
+  echo "4) Activate Egress System"
+  echo "5) Deactivate Egress System"
+  echo "6) Health Check"
+  echo "7) Logs"
+  echo "8) Upgrade Egress System"
+  echo "9) Backup / Restore Config"
   echo "0) Exit"
   echo "----------------------------------------"
   echo -n "Select: "
@@ -97,13 +316,13 @@ MTU/MSS note (important)
 
 EOF
   echo
-  echo "Press Enter to return..."
-  read -r
+  pause
 }
 
 require_root() {
   if [[ "${EUID:-$(id -u)}" -ne 0 ]]; then
     LAST_ERROR="Run as root: sudo tge"
+    echo "$LAST_ERROR"
     return 1
   fi
   return 0
@@ -131,18 +350,236 @@ run_and_capture_error() {
   return 0
 }
 
+load_tge_config() {
+  if [[ ! -f "$CFG" ]]; then
+    echo "Configuration not found. Run Config Egress System first."
+    return 1
+  fi
+  # shellcheck disable=SC1090
+  . "$CFG"
+  TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
+  TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
+  PRIMARY_NIC="${PRIMARY_NIC:-}"
+  DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
+  SERVER_GATEWAY="${SERVER_GATEWAY:-}"
+  SERVER_GATEWAY_IF="${SERVER_GATEWAY_IF:-$PRIMARY_NIC}"
+  WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
+  GRE_IF="${GRE_IF:-gre-egress}"
+  GRE_LOCAL_IP="${GRE_LOCAL_IP:-}"
+  GRE_REMOTE_IP="${GRE_REMOTE_IP:-}"
+  GRE_TUN_IP="${GRE_TUN_IP:-}"
+  GRE_MTU="${GRE_MTU:-1476}"
+  LAN_CIDRS="${LAN_CIDRS:-192.168.0.0/16}"
+  MSS_CLAMP="${MSS_CLAMP:-1436}"
+  V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
+  V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
+  TUN_IF="${TUN_IF:-}"
+  V2RAYA_GUI_PORT="${V2RAYA_GUI_PORT:-2017}"
+  TGE_FIREWALL_BACKEND="${TGE_FIREWALL_BACKEND:-legacy}"
+}
+
+quote_env_value() {
+  local value="${1:-}"
+  value="${value//\\/\\\\}"
+  value="${value//\"/\\\"}"
+  printf '"%s"' "$value"
+}
+
+write_env_line() {
+  local name="$1" value
+  value="${!name-}"
+  printf '%s=%s\n' "$name" "$(quote_env_value "$value")"
+}
+
+write_tge_config() {
+  backup_config "pre-edit"
+  {
+    echo "# V2rayTGE configuration"
+    write_env_line TGE_EGRESS_MODE
+    write_env_line TGE_EDGE_MODE
+    write_env_line PRIMARY_NIC
+    write_env_line DIRECT_EDGE_GW
+    write_env_line SERVER_GATEWAY
+    write_env_line SERVER_GATEWAY_IF
+    write_env_line WIREGUARD_IF
+    write_env_line GRE_IF
+    write_env_line GRE_LOCAL_IP
+    write_env_line GRE_REMOTE_IP
+    write_env_line GRE_TUN_IP
+    write_env_line GRE_MTU
+    write_env_line LAN_CIDRS
+    write_env_line MSS_CLAMP
+    write_env_line V2RAY_TABLE
+    write_env_line V2RAY_TABLE_ID
+    write_env_line TUN_IF
+    write_env_line V2RAYA_GUI_PORT
+    write_env_line TGE_FIREWALL_BACKEND
+  } > "$CFG"
+  secure_config_file
+}
+
+validate_ipv4_value() {
+  local value="$1"
+  [[ -z "$value" ]] && return 0
+  if declare -F validate_ipv4 >/dev/null 2>&1; then
+    validate_ipv4 "$value" >/dev/null 2>&1
+  else
+    [[ "$value" =~ ^([0-9]{1,3}\.){3}[0-9]{1,3}$ ]]
+  fi
+}
+
+validate_cidr_value() {
+  local value="$1"
+  if declare -F validate_cidr >/dev/null 2>&1; then
+    validate_cidr "$value" >/dev/null 2>&1
+  else
+    [[ "$value" == */* ]]
+  fi
+}
+
+validate_tge_config() {
+  local cidr
+  case "$TGE_EGRESS_MODE" in
+    v2raya_tun|wireguard|server_gateway) ;;
+    *) echo "Invalid TGE_EGRESS_MODE. Use: v2raya_tun, wireguard, server_gateway"; return 1 ;;
+  esac
+  case "$TGE_EDGE_MODE" in
+    gre|direct) ;;
+    *) echo "Invalid TGE_EDGE_MODE. Use: gre, direct"; return 1 ;;
+  esac
+  case "$TGE_FIREWALL_BACKEND" in
+    legacy|nft) ;;
+    *) echo "Invalid TGE_FIREWALL_BACKEND. Use: legacy, nft"; return 1 ;;
+  esac
+  for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
+    validate_cidr_value "$cidr" || { echo "Invalid LAN CIDR: $cidr"; return 1; }
+  done
+  [[ "$GRE_TUN_IP" == "" ]] || validate_cidr_value "$GRE_TUN_IP" || { echo "Invalid GRE_TUN_IP: $GRE_TUN_IP"; return 1; }
+  validate_ipv4_value "$GRE_LOCAL_IP" || { echo "Invalid GRE_LOCAL_IP: $GRE_LOCAL_IP"; return 1; }
+  validate_ipv4_value "$GRE_REMOTE_IP" || { echo "Invalid GRE_REMOTE_IP: $GRE_REMOTE_IP"; return 1; }
+  validate_ipv4_value "$DIRECT_EDGE_GW" || { echo "Invalid DIRECT_EDGE_GW: $DIRECT_EDGE_GW"; return 1; }
+  validate_ipv4_value "$SERVER_GATEWAY" || { echo "Invalid SERVER_GATEWAY: $SERVER_GATEWAY"; return 1; }
+  [[ "$GRE_MTU" =~ ^[0-9]+$ ]] || { echo "GRE_MTU must be numeric."; return 1; }
+  [[ "$MSS_CLAMP" =~ ^[0-9]+$ ]] || { echo "MSS_CLAMP must be numeric."; return 1; }
+  [[ "$V2RAY_TABLE_ID" =~ ^[0-9]+$ ]] || { echo "V2RAY_TABLE_ID must be numeric."; return 1; }
+  [[ "$V2RAYA_GUI_PORT" =~ ^[0-9]+$ ]] || { echo "V2RAYA_GUI_PORT must be numeric."; return 1; }
+}
+
+edit_config_value() {
+  local var_name="$1" label="$2" current_value new_value old_value
+  current_value="${!var_name-}"
+  echo
+  echo "$label"
+  echo "Current: ${current_value:-<blank>}"
+  read -r -p "New value (leave blank to keep current, type <blank> to clear): " new_value
+  old_value="$current_value"
+  if [[ "$new_value" == "<blank>" ]]; then
+    printf -v "$var_name" "%s" ""
+  elif [[ -n "$new_value" ]]; then
+    printf -v "$var_name" "%s" "$new_value"
+  else
+    echo "No change."
+    pause
+    return 0
+  fi
+
+  if ! validate_tge_config; then
+    printf -v "$var_name" "%s" "$old_value"
+    echo "Invalid value. $var_name was not changed."
+  else
+    write_tge_config
+    echo "Saved $var_name."
+  fi
+  pause
+}
+
+edit_config_menu() {
+  require_root || return 0
+  load_tge_config || { pause; return 0; }
+  while true; do
+    clear
+    echo "============================================================"
+    echo "        V2rayTGE Configuration Editor"
+    echo "============================================================"
+    echo " 1) Egress mode                  [$TGE_EGRESS_MODE]"
+    echo " 2) Edge mode                    [$TGE_EDGE_MODE]"
+    echo " 3) Primary NIC                  [$PRIMARY_NIC]"
+    echo " 4) Direct edge next-hop         [${DIRECT_EDGE_GW:-<blank>}]"
+    echo " 5) Server gateway               [${SERVER_GATEWAY:-<blank>}]"
+    echo " 6) Server gateway interface     [${SERVER_GATEWAY_IF:-<blank>}]"
+    echo " 7) WireGuard interface          [${WIREGUARD_IF:-<blank>}]"
+    echo " 8) GRE interface                [$GRE_IF]"
+    echo " 9) GRE local IP                 [${GRE_LOCAL_IP:-<blank>}]"
+    echo "10) GRE remote IP                [${GRE_REMOTE_IP:-<blank>}]"
+    echo "11) GRE tunnel IP/CIDR           [${GRE_TUN_IP:-<blank>}]"
+    echo "12) GRE MTU                      [$GRE_MTU]"
+    echo "13) LAN CIDRs                    [$LAN_CIDRS]"
+    echo "14) MSS clamp                    [${MSS_CLAMP:-<blank>}]"
+    echo "15) Routing table name           [$V2RAY_TABLE]"
+    echo "16) Routing table ID             [$V2RAY_TABLE_ID]"
+    echo "17) Egress interface override    [${TUN_IF:-<blank>}]"
+    echo "18) v2rayA GUI port              [$V2RAYA_GUI_PORT]"
+    echo "19) Firewall backend             [$TGE_FIREWALL_BACKEND]"
+    echo "A) Apply saved configuration"
+    echo "0) Back"
+    echo
+    read -r -p "Choose an option: " edit_choice
+    case "$edit_choice" in
+      1) edit_config_value TGE_EGRESS_MODE "Egress mode (v2raya_tun/wireguard/server_gateway)" ;;
+      2) edit_config_value TGE_EDGE_MODE "Edge mode (gre/direct)" ;;
+      3) edit_config_value PRIMARY_NIC "Primary NIC" ;;
+      4) edit_config_value DIRECT_EDGE_GW "Direct edge next-hop IP" ;;
+      5) edit_config_value SERVER_GATEWAY "Server egress gateway IP" ;;
+      6) edit_config_value SERVER_GATEWAY_IF "Server egress gateway interface" ;;
+      7) edit_config_value WIREGUARD_IF "WireGuard interface" ;;
+      8) edit_config_value GRE_IF "GRE interface" ;;
+      9) edit_config_value GRE_LOCAL_IP "GRE local/source IP" ;;
+      10) edit_config_value GRE_REMOTE_IP "GRE remote/edge IP" ;;
+      11) edit_config_value GRE_TUN_IP "GRE tunnel IP/CIDR" ;;
+      12) edit_config_value GRE_MTU "GRE MTU" ;;
+      13) edit_config_value LAN_CIDRS "LAN CIDRs (comma-separated)" ;;
+      14) edit_config_value MSS_CLAMP "MSS clamp" ;;
+      15) edit_config_value V2RAY_TABLE "Routing table name" ;;
+      16) edit_config_value V2RAY_TABLE_ID "Routing table ID" ;;
+      17) edit_config_value TUN_IF "Egress interface override" ;;
+      18) edit_config_value V2RAYA_GUI_PORT "v2rayA GUI port" ;;
+      19) edit_config_value TGE_FIREWALL_BACKEND "Firewall backend (legacy/nft)" ;;
+      A|a) run_and_capture_error "Apply Saved Configuration" /usr/local/sbin/tge-ctl --activate || true; pause ;;
+      0) return 0 ;;
+      *) LAST_ERROR="Invalid edit selection: $edit_choice" ;;
+    esac
+    load_tge_config || return 0
+  done
+}
+
+backup_restore_menu() {
+  require_root || return 0
+  echo "=== V2rayTGE config backups ==="
+  list_config_backups
+  echo
+  echo "1) Create backup now"
+  echo "2) Restore latest backup"
+  echo "0) Back"
+  read -r -p "Choose an option [0-2]: " backup_choice
+  case "$backup_choice" in
+    1) backup_config "manual" ;;
+    2) restore_latest_config_backup ;;
+    0) ;;
+    *) echo "Invalid selection." ;;
+  esac
+  pause
+}
+
 activate() {
   require_root || return 0
   run_and_capture_error "Activate" /usr/local/sbin/tge-ctl --activate || true
-  echo "Press Enter..."
-  read -r
+  pause
 }
 
 deactivate() {
   require_root || return 0
   run_and_capture_error "Deactivate" /usr/local/sbin/tge-ctl --deactivate || true
-  echo "Press Enter..."
-  read -r
+  pause
 }
 
 config_wizard() {
@@ -152,23 +589,36 @@ config_wizard() {
   else
     LAST_ERROR=""
   fi
-  echo "Press Enter..."
-  read -r
+  pause
 }
 
 health() {
   require_root || return 0
   run_and_capture_error "Health Check" /usr/local/sbin/tge-health || true
-  echo "Press Enter..."
-  read -r
+  pause
 }
 
 logs() {
   require_root || return 0
   run_and_capture_error "Log" /usr/local/sbin/tge-logs || true
-  echo "Press Enter..."
-  read -r
+  pause
 }
+
+case "${1:-}" in
+  help) help_intro; exit 0 ;;
+  configure|config) config_wizard; exit 0 ;;
+  edit) edit_config_menu; exit 0 ;;
+  activate) activate; exit 0 ;;
+  deactivate) deactivate; exit 0 ;;
+  health|check) health; exit 0 ;;
+  logs|log) logs; exit 0 ;;
+  version|check-upgrade) version_summary fresh; exit 0 ;;
+  upgrade) upgrade_tge; exit $? ;;
+  backup) require_root && backup_config "manual"; exit $? ;;
+  restore) require_root && restore_latest_config_backup; exit $? ;;
+  "" ) ;;
+  *) echo "Usage: tge [help|configure|edit|activate|deactivate|health|logs|version|check-upgrade|upgrade|backup|restore]"; exit 2 ;;
+esac
 
 while true; do
   menu
@@ -176,10 +626,13 @@ while true; do
   case "$choice" in
     1) help_intro ;;
     2) config_wizard ;;
-    3) activate ;;
-    4) deactivate ;;
-    5) health ;;
-    6) logs ;;
+    3) edit_config_menu ;;
+    4) activate ;;
+    5) deactivate ;;
+    6) health ;;
+    7) logs ;;
+    8) upgrade_tge; pause ;;
+    9) backup_restore_menu ;;
     0) exit 0 ;;
     *) LAST_ERROR="Invalid selection: $choice" ;;
   esac

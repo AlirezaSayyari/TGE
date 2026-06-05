@@ -177,10 +177,23 @@ Menu:
 
 1. Help & Introduction
 2. Configure Egress System (Wizard)
-3. Activate Egress System
-4. Deactivate Egress System
-5. Health Check
-6. Logs
+3. Edit Egress System Configuration
+4. Activate Egress System
+5. Deactivate Egress System
+6. Health Check
+7. Logs
+8. Upgrade Egress System
+9. Backup / Restore Config
+
+Useful direct commands:
+
+```bash
+sudo tge edit
+sudo tge upgrade
+sudo tge backup
+sudo tge restore
+tge version
+```
 
 ---
 
@@ -211,6 +224,37 @@ At the end it:
 In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
 
 In server-gateway mode, activation skips both v2rayA and WireGuard startup, routes edge traffic out through the server gateway, and leaves NAT to the edge device.
+
+### Edit Configuration
+
+Use menu option 3 or:
+
+```bash
+sudo tge edit
+```
+
+The editor changes one saved config value at a time without forcing the full wizard flow. It creates a backup before each saved edit and can apply the saved configuration from inside the editor.
+
+### Upgrade
+
+Use menu option 8 or:
+
+```bash
+sudo tge upgrade
+```
+
+The upgrade flow checks the latest GitHub release/tag, backs up `/opt/v2raytge/config.env`, downloads the selected archive, and runs the installer with the correct release raw URL so tagged upgrades do not accidentally install `main`.
+
+### Backup / Restore
+
+Use menu option 9 or:
+
+```bash
+sudo tge backup
+sudo tge restore
+```
+
+Config backups are stored under `/var/backups/v2raytge`.
 
 ---
 

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_RAW="https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main"
-GH_REPO="AlirezaSayyari/V2rayTGE"
+REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main}"
+GH_REPO="${GH_REPO:-AlirezaSayyari/V2rayTGE}"
 
 INSTALL_DIR="/opt/tge"
 BIN_DIR="/usr/local/bin"
