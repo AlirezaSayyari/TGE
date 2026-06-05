@@ -34,12 +34,14 @@ TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
 TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
 PRIMARY_NIC="${PRIMARY_NIC:-}"
 DIRECT_EDGE_GW="${DIRECT_EDGE_GW:-}"
+SERVER_GATEWAY="${SERVER_GATEWAY:-}"
+SERVER_GATEWAY_IF="${SERVER_GATEWAY_IF:-$PRIMARY_NIC}"
 WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
-if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
-  TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
-else
-  TUN_IF="${TUN_IF:-tun0}"
-fi
+case "$TGE_EGRESS_MODE" in
+  wireguard) TUN_IF="${TUN_IF:-$WIREGUARD_IF}" ;;
+  server_gateway) TUN_IF="${TUN_IF:-$SERVER_GATEWAY_IF}" ;;
+  *) TUN_IF="${TUN_IF:-tun0}" ;;
+esac
 V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
 V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
 MSS_CLAMP="${MSS_CLAMP:-1436}"
@@ -58,12 +60,29 @@ case "$TGE_EDGE_MODE" in
     ;;
 esac
 case "$TGE_EGRESS_MODE" in
-  v2raya_tun|wireguard) ;;
+  v2raya_tun|wireguard|server_gateway) ;;
   *)
-    log "ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard)."
+    log "ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard|server_gateway)."
     exit 2
     ;;
 esac
+
+default_gateway_for_iface(){
+  local iface="$1" gw
+  gw="$(ip route show default dev "$iface" 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}' | head -n1)"
+  if [[ -z "$gw" ]]; then
+    gw="$(ip route show default 2>/dev/null | awk '/default/ {for(i=1;i<=NF;i++) if($i=="via") print $(i+1)}' | head -n1)"
+  fi
+  echo "$gw"
+}
+
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  [[ -n "$SERVER_GATEWAY_IF" ]] || SERVER_GATEWAY_IF="$(guess_primary_nic)"
+  [[ -n "$SERVER_GATEWAY_IF" ]] || { log "ERROR: SERVER_GATEWAY_IF is required in server_gateway mode."; exit 2; }
+  TUN_IF="$SERVER_GATEWAY_IF"
+  SERVER_GATEWAY="${SERVER_GATEWAY:-$(default_gateway_for_iface "$SERVER_GATEWAY_IF")}"
+  [[ -n "$SERVER_GATEWAY" ]] || { log "ERROR: SERVER_GATEWAY is required in server_gateway mode."; exit 2; }
+fi
 
 wireguard_runtime_allowedips_ok(){
   wg show "$TUN_IF" allowed-ips 2>/dev/null | grep -qw '0.0.0.0/0'
@@ -235,7 +254,7 @@ if ! ip link show "$EDGE_IF" >/dev/null 2>&1; then
 fi
 
 if ! ip link show "$TUN_IF" >/dev/null 2>&1; then
-  log "WARN: $TUN_IF missing (v2rayA not ready); exit 0 (no change)."
+  log "WARN: $TUN_IF missing; exit 0 (no change)."
   exit 0
 fi
 
@@ -302,7 +321,11 @@ cleanup_stale_egress_if "wg0"
 ensure_rt_table "$V2RAY_TABLE_ID" "$V2RAY_TABLE"
 
 # 3) Routes in v2ray table (safe replace; DOES NOT touch main default route)
-ip route replace default dev "$TUN_IF" table "$V2RAY_TABLE"
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  ip route replace default via "$SERVER_GATEWAY" dev "$SERVER_GATEWAY_IF" table "$V2RAY_TABLE"
+else
+  ip route replace default dev "$TUN_IF" table "$V2RAY_TABLE"
+fi
 
 # LAN CIDRs (comma separated)
 if [[ -n "${LAN_CIDRS:-}" ]]; then
@@ -343,28 +366,36 @@ if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
     ip rule add pref 101 to "$GRE_SUBNET" lookup main
 fi
 
-rule110_line="$(ip -o rule show 2>/dev/null | awk '$1=="110:"{print; exit}')"
-if [[ -n "$rule110_line" ]] \
-  && ! echo "$rule110_line" | grep -qE "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
-  && echo "$rule110_line" | grep -qE "lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"; then
-  log "INFO: pref 110 belongs to TGE but targets a different egress interface; replacing. line=[$rule110_line]"
-  ip rule del pref 110 || true
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" && "$TUN_IF" == "$EDGE_IF" ]]; then
+  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE"
+  safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE_ID"
+  safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE"
+  safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE_ID"
+else
+  rule110_line="$(ip -o rule show 2>/dev/null | awk '$1=="110:"{print; exit}')"
+  if [[ -n "$rule110_line" ]] \
+    && ! echo "$rule110_line" | grep -qE "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
+    && echo "$rule110_line" | grep -qE "lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"; then
+    log "INFO: pref 110 belongs to TGE but targets a different egress interface; replacing. line=[$rule110_line]"
+    ip rule del pref 110 || true
+  fi
+  ensure_rule_pref 110 "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
+    ip rule add pref 110 iif "$TUN_IF" lookup "$V2RAY_TABLE"
 fi
-ensure_rule_pref 110 "iif ${TUN_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})" \
-  ip rule add pref 110 iif "$TUN_IF" lookup "$V2RAY_TABLE"
 
 ip route flush cache || true
 
 # 5) iptables ensure-only (NO flush, NO policy change)
 
-# NAT: MASQUERADE each LAN CIDR out of the selected egress interface.
-if [[ -n "${LAN_CIDRS:-}" ]]; then
+# NAT: MASQUERADE each LAN CIDR out of tunnel egress only. In server_gateway
+# mode, NAT is intentionally left to the edge device such as FortiGate.
+if [[ "$TGE_EGRESS_MODE" != "server_gateway" && -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
     iptables_ensure nat POSTROUTING "-s $cidr -o $TUN_IF -j MASQUERADE"
   done
 fi
 
-# FORWARD allow edge->tun and return established
+# FORWARD allow edge->egress and return established
 iptables_ensure filter FORWARD "-i $EDGE_IF -o $TUN_IF -j ACCEPT"
 iptables_ensure filter FORWARD "-i $TUN_IF -o $EDGE_IF -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT"
 

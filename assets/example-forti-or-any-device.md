@@ -1,7 +1,7 @@
 # Edge Device Examples
 
 V2rayTGE supports two edge-facing modes while using one server NIC. The wizard prints the exact values to use.
-For egress, TGE can use either v2rayA system-tun (`tun0`) or WireGuard (`wg0`).
+For egress, TGE can use v2rayA system-tun (`tun0`), WireGuard (`wg0`), or the server default gateway.
 
 ## Mode 1: GRE
 
@@ -19,6 +19,12 @@ Traffic path:
 
 ```text
 LAN -> Edge Device -> GRE tunnel -> V2rayTGE gre-egress -> tun0/wg0 -> Internet
+```
+
+With server-gateway egress selected, the GRE path becomes:
+
+```text
+LAN -> Edge Device -> GRE tunnel -> V2rayTGE gre-egress -> server default gateway -> Internet
 ```
 
 ## Mode 2: Direct Primary NIC
@@ -39,6 +45,8 @@ Traffic path:
 LAN -> Edge Device -> V2rayTGE primary NIC -> tun0/wg0 -> Internet
 ```
 
+With server-gateway egress selected, traffic exits through the server gateway instead of `tun0/wg0`.
+
 ## WireGuard Egress Notes
 
 When WireGuard is selected:
@@ -52,6 +60,21 @@ Traffic path:
 
 ```text
 LAN -> Edge Device -> V2rayTGE edge -> wg0 -> WireGuard server -> Internet
+```
+
+## Server Gateway Egress Notes
+
+Use this when the edge device handles NAT/PBR and TGE should not forward traffic to `tun0` or `wg0`.
+
+- The wizard stores `TGE_EGRESS_MODE=server_gateway`.
+- TGE routes edge traffic out via `SERVER_GATEWAY` on `SERVER_GATEWAY_IF`.
+- TGE does not add `MASQUERADE` rules in this mode.
+- On FortiGate, keep NAT and use PBR/static routing to send the desired traffic into the selected TGE edge path, such as the GRE tunnel.
+
+Traffic path:
+
+```text
+LAN -> Edge Device -> V2rayTGE edge -> server default gateway -> Internet
 ```
 
 ## Server NIC Layout

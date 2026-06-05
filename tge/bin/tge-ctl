@@ -22,6 +22,7 @@ load_cfg() {
   TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
   TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
   PRIMARY_NIC="${PRIMARY_NIC:-}"
+  SERVER_GATEWAY_IF="${SERVER_GATEWAY_IF:-$PRIMARY_NIC}"
   WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
   case "$TGE_EDGE_MODE" in
     gre) EDGE_IF="$GRE_IF" ;;
@@ -35,17 +36,17 @@ load_cfg() {
       ;;
   esac
   case "$TGE_EGRESS_MODE" in
-    v2raya_tun|wireguard) ;;
+    v2raya_tun|wireguard|server_gateway) ;;
     *)
-      echo "[tge-ctl] ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard)."
+      echo "[tge-ctl] ERROR: invalid TGE_EGRESS_MODE=$TGE_EGRESS_MODE (use: v2raya_tun|wireguard|server_gateway)."
       exit 2
       ;;
   esac
-  if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
-    TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
-  else
-    TUN_IF="${TUN_IF:-tun0}"
-  fi
+  case "$TGE_EGRESS_MODE" in
+    wireguard) TUN_IF="${TUN_IF:-$WIREGUARD_IF}" ;;
+    server_gateway) TUN_IF="${TUN_IF:-$SERVER_GATEWAY_IF}" ;;
+    *) TUN_IF="${TUN_IF:-tun0}" ;;
+  esac
   V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
   V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
   if [[ "$TGE_EDGE_MODE" == "gre" && -n "${GRE_TUN_IP:-}" ]]; then
@@ -109,9 +110,11 @@ activate() {
       echo "[tge-ctl] ERROR: failed to start wg-quick@${WIREGUARD_IF}." >&2
       exit 20
     }
-  else
+  elif [[ "$TGE_EGRESS_MODE" == "v2raya_tun" ]]; then
     # Bring up v2rayA container (best effort)
     compose_up
+  else
+    echo "[tge-ctl] Server gateway egress selected; skipping v2rayA/WireGuard startup."
   fi
 
   # Enable self-healing
@@ -156,17 +159,18 @@ deactivate() {
     TGE_EGRESS_MODE="${TGE_EGRESS_MODE:-v2raya_tun}"
     TGE_EDGE_MODE="${TGE_EDGE_MODE:-gre}"
     PRIMARY_NIC="${PRIMARY_NIC:-}"
+    SERVER_GATEWAY_IF="${SERVER_GATEWAY_IF:-$PRIMARY_NIC}"
     WIREGUARD_IF="${WIREGUARD_IF:-wg0}"
     if [[ "$TGE_EDGE_MODE" == "direct" ]]; then
       EDGE_IF="$PRIMARY_NIC"
     else
       EDGE_IF="$GRE_IF"
     fi
-    if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
-      TUN_IF="${TUN_IF:-$WIREGUARD_IF}"
-    else
-      TUN_IF="${TUN_IF:-tun0}"
-    fi
+    case "$TGE_EGRESS_MODE" in
+      wireguard) TUN_IF="${TUN_IF:-$WIREGUARD_IF}" ;;
+      server_gateway) TUN_IF="${TUN_IF:-$SERVER_GATEWAY_IF}" ;;
+      *) TUN_IF="${TUN_IF:-tun0}" ;;
+    esac
     V2RAY_TABLE="${V2RAY_TABLE:-v2ray}"
     V2RAY_TABLE_ID="${V2RAY_TABLE_ID:-100}"
     MSS_CLAMP="${MSS_CLAMP:-1436}"
@@ -180,11 +184,23 @@ deactivate() {
 
   # FORWARD allow rules
   safe_iptables_del_forward "$EDGE_IF" "$TUN_IF" || true
+  if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+    safe_iptables_del_forward "$EDGE_IF" "tun0" || true
+    safe_iptables_del_forward "$EDGE_IF" "wg0" || true
+    safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE"
+    safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE_ID"
+    safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE"
+    safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE_ID"
+  fi
 
   # NAT per LAN CIDR
   if [[ -n "$LAN_CIDRS" ]]; then
     for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
       safe_iptables_del_nat "$cidr" "$TUN_IF" || true
+      if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+        safe_iptables_del_nat "$cidr" "tun0" || true
+        safe_iptables_del_nat "$cidr" "wg0" || true
+      fi
     done
   fi
 

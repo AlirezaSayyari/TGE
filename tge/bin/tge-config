@@ -14,7 +14,7 @@ if [[ -r "$META_FILE" ]]; then
 fi
 
 need_root
-default_egress_mode="${TGE_EGRESS_MODE:-v2raya_tun}"; default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_direct_edge_gw="${DIRECT_EDGE_GW:-}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"; default_wg_if="${WIREGUARD_IF:-wg0}"
+default_egress_mode="${TGE_EGRESS_MODE:-v2raya_tun}"; default_edge_mode="${TGE_EDGE_MODE:-gre}"; default_direct_edge_gw="${DIRECT_EDGE_GW:-}"; default_server_gateway="${SERVER_GATEWAY:-}"; default_server_gateway_if="${SERVER_GATEWAY_IF:-}"; default_gre_remote_ip="${GRE_REMOTE_IP:-}"; default_gre_tun_ip="${GRE_TUN_IP:-10.255.255.2/30}"; default_lan_cidr="${LAN_CIDRS:-192.168.0.0/16}"; default_gre_mtu="${GRE_MTU:-1476}"; default_mss="${MSS_CLAMP:-1436}"; default_gui_port="${V2RAYA_GUI_PORT:-2017}"; default_wg_if="${WIREGUARD_IF:-wg0}"
 
 preview_nic="$(guess_primary_nic)"
 [[ -n "$preview_nic" ]] || preview_nic="eth0"
@@ -241,14 +241,17 @@ echo "=== V2rayTGE Config Wizard (Release: ${TGE_CLI_VERSION:-v1.0.0}) ==="
 
 case "$default_egress_mode" in
   wireguard) default_egress_choice=2 ;;
+  server_gateway) default_egress_choice=3 ;;
   *) default_egress_choice=1 ;;
 esac
 egress_choice="$(choose_number "Egress backend:" "$default_egress_choice" \
   "v2rayA system-tun (tun0)" \
-  "WireGuard wg-quick (wg0)")"
+  "WireGuard wg-quick (wg0)" \
+  "Server default gateway (no tun/wg)")"
 case "$egress_choice" in
   1) egress_mode="v2raya_tun"; tun_if="tun0"; wireguard_if="" ;;
   2) egress_mode="wireguard"; wireguard_config_wizard; tun_if="$wireguard_if" ;;
+  3) egress_mode="server_gateway"; tun_if=""; wireguard_if="" ;;
 esac
 
 if [[ "$egress_mode" == "v2raya_tun" ]]; then
@@ -265,6 +268,19 @@ validate_iface_exists "$nic"
 
 local_ip="$(iface_ipv4 "$nic")"
 echo "Local IPv4 on $nic: $local_ip"
+
+server_gateway=""
+server_gateway_if=""
+if [[ "$egress_mode" == "server_gateway" ]]; then
+  server_gateway_if="${default_server_gateway_if:-$nic}"
+  guessed_server_gateway="${default_server_gateway:-$(default_gateway_for_iface "$server_gateway_if")}"
+  if [[ -n "$guessed_server_gateway" ]]; then
+    echo "[wizard] suggested server egress gateway: $guessed_server_gateway via $server_gateway_if"
+  fi
+  read -r -p "Server egress gateway IP [${guessed_server_gateway}]: " server_gateway
+  server_gateway="${server_gateway:-$guessed_server_gateway}"
+  validate_ipv4 "$server_gateway"
+fi
 
 case "$default_edge_mode" in
   direct) default_edge_choice=2 ;;
@@ -375,6 +391,8 @@ TGE_EGRESS_MODE="$egress_mode"
 TGE_EDGE_MODE="$edge_mode"
 PRIMARY_NIC="$nic"
 DIRECT_EDGE_GW="$direct_edge_gw"
+SERVER_GATEWAY="$server_gateway"
+SERVER_GATEWAY_IF="$server_gateway_if"
 WIREGUARD_IF="$wireguard_if"
 GRE_IF="gre-egress"
 GRE_LOCAL_IP="$gre_local_ip"
@@ -434,10 +452,17 @@ if [[ "$egress_mode" == "v2raya_tun" ]]; then
     echo "tun0 is present. You can Activate now."
   fi
 else
-  echo "=== WireGuard ==="
-  echo "Interface: $wireguard_if"
-  echo "Config: /etc/wireguard/${wireguard_if}.conf"
-  echo "TGE will use $wireguard_if as the egress tunnel and will not start v2rayA in this mode."
+  if [[ "$egress_mode" == "server_gateway" ]]; then
+    echo "=== Server Gateway Egress ==="
+    echo "Traffic entering the selected edge interface will use: $server_gateway via $server_gateway_if"
+    echo "No v2rayA/WireGuard egress tunnel or TGE NAT rule is configured in this mode."
+    echo "Keep NAT/PBR on the edge device, for example FortiGate."
+  else
+    echo "=== WireGuard ==="
+    echo "Interface: $wireguard_if"
+    echo "Config: /etc/wireguard/${wireguard_if}.conf"
+    echo "TGE will use $wireguard_if as the egress tunnel and will not start v2rayA in this mode."
+  fi
 fi
 
 # 4.9 ask activate

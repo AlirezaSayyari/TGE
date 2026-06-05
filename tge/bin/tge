@@ -42,10 +42,10 @@ help_intro() {
   clear
   cat <<'EOF'
 What is V2rayTGE?
-- A production-safe egress gateway that forwards LAN traffic to the Internet through v2rayA system-tun or WireGuard.
+- A production-safe egress gateway that forwards LAN traffic to the Internet through v2rayA system-tun, WireGuard, or the server default gateway.
 - Supported traffic paths:
-  - GRE mode: LAN -> Edge Device (Forti/Router/...) -> GRE -> EgressGW -> policy routing (table v2ray) -> tun0 -> Internet
-  - Direct mode: LAN -> Edge Device -> server primary NIC -> policy routing (table v2ray) -> tun0/wg0 -> Internet
+  - GRE mode: LAN -> Edge Device (Forti/Router/...) -> GRE -> EgressGW -> policy routing (table v2ray) -> selected egress -> Internet
+  - Direct mode: LAN -> Edge Device -> server primary NIC -> policy routing (table v2ray) -> selected egress -> Internet
 
 Key behavior
 - No iptables/ip rule flush
@@ -73,6 +73,7 @@ Prerequisites
 - Egress backend chosen in wizard:
   - v2rayA system-tun: uses tun0 from v2rayA
   - WireGuard: uses wg0 or another wg-quick interface; config is forced to Table=off
+  - Server default gateway: bypasses tun0/wg0 and sends traffic out through the server gateway; NAT/PBR stays on the edge device
 - Edge device PBR/static routes that send LAN CIDRs toward the selected edge path
 
 v2rayA GUI
@@ -91,7 +92,7 @@ v2rayA GUI
 
 MTU/MSS note (important)
 - GRE mode: if ping works but HTTPS/TLS stalls, you likely have PMTU blackhole.
-- GRE mode applies MSS clamp on GRE -> tun0 path (for example, 1436 when GRE MTU is 1476).
+- GRE mode applies MSS clamp on GRE -> selected egress path (for example, 1436 when GRE MTU is 1476).
 - Direct mode skips GRE MTU and MSS clamp prompts.
 
 EOF

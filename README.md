@@ -4,11 +4,11 @@
 ![Docker](https://img.shields.io/badge/docker-ready-blue?style=for-the-badge)
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
 
-# TGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA/Wiregaurd Egress Gateway
+# TGE (Traffic Gateway Egress) — Production-Safe Edge → v2rayA/WireGuard/Server-Gateway Egress
 
 V2rayTGE is a **production-safe** installer + CLI toolkit that turns an Ubuntu server into an **Egress Gateway**.
 It receives traffic from your LAN through an edge device such as FortiGate / Router / Firewall / ...
-and forwards it to the Internet through either **v2rayA system-tun** (`tun0`) or **WireGuard** (`wg0`).
+and forwards it to the Internet through **v2rayA system-tun** (`tun0`), **WireGuard** (`wg0`), or the **server default gateway**.
 
 Supported edge modes:
 - **GRE mode**: the previous design, where the edge device sends LAN traffic through a GRE tunnel.
@@ -17,6 +17,7 @@ Supported edge modes:
 Supported egress backends:
 - **v2rayA system-tun**: policy-routes LAN traffic to `tun0` created by v2rayA.
 - **WireGuard**: policy-routes LAN traffic to a `wg-quick` interface such as `wg0`; the wizard enforces `Table = off` so the server default route is not changed.
+- **Server default gateway**: bypasses `tun0`/`wg0` and policy-routes edge traffic out through the server gateway. TGE does not add NAT in this mode; keep NAT/PBR on the edge device such as FortiGate.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -75,6 +76,18 @@ tun0 (v2rayA)
 ↓
 Internet
 
+Server-gateway egress:
+
+LAN (one or multiple CIDRs)
+↓
+Edge Device (GRE or direct)
+↓
+EgressGW selected edge interface
+↓  Policy Routing (table: v2ray)
+Server default gateway on primary NIC
+↓
+Internet
+
 ---
 
 
@@ -105,14 +118,14 @@ V2rayTGE only:
 ### 2) Policy Routing Rules
 V2rayTGE ensures these rules exist (and does not delete/flush others):
 - `pref 100`: traffic **incoming on selected edge interface** → `lookup v2ray`
-- `pref 110`: helper rule for traffic involving `tun0` → `lookup v2ray`
+- `pref 110`: helper rule for traffic involving the selected egress interface → `lookup v2ray`
 - `pref 101`: keep GRE subnet stable in `main` (GRE mode only)
 
 ### 3) Forwarding + NAT
-To let LAN subnets behind the edge device reach the Internet via `tun0`:
-- FORWARD: allow selected edge interface → `tun0`
-- FORWARD: allow return `tun0` → selected edge interface for `RELATED,ESTABLISHED`
-- NAT: `MASQUERADE` LAN CIDRs out of `tun0`
+To let LAN subnets behind the edge device reach the Internet:
+- FORWARD: allow selected edge interface → selected egress interface
+- FORWARD: allow return selected egress interface → selected edge interface for `RELATED,ESTABLISHED`
+- NAT: `MASQUERADE` LAN CIDRs out of `tun0`/`wg0` only. In server-gateway mode, TGE does not add NAT; NAT should stay on the edge device.
 
 ### 4) MSS Clamp (fix “ping works but HTTPS/TLS hangs”)
 A very common real-world issue:
@@ -175,7 +188,7 @@ Menu:
 
 The wizard asks you step-by-step:
 
-* egress backend by number: v2rayA system-tun or WireGuard
+* egress backend by number: v2rayA system-tun, WireGuard, or server default gateway
 * primary NIC selection (used to discover local server IP)
 * edge mode: `gre` or `direct`
 * GRE remote IP and tunnel IP/CIDR only when GRE mode is selected
@@ -184,6 +197,7 @@ The wizard asks you step-by-step:
 * MSS clamp only when GRE mode is selected
 * v2rayA GUI port (default 2017) only for v2rayA mode
 * WireGuard interface/config source only for WireGuard mode
+* server gateway IP only for server-gateway mode; the default gateway is suggested automatically
 
 At the end it:
 
@@ -195,6 +209,8 @@ At the end it:
 * asks if you want to activate immediately
 
 In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
+
+In server-gateway mode, activation skips both v2rayA and WireGuard startup, routes edge traffic out through the server gateway, and leaves NAT to the edge device.
 
 ---
 
