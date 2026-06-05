@@ -5,6 +5,7 @@ ETC_DIR="/opt/v2raytge"
 CFG="$ETC_DIR/config.env"
 LOG_DIR="/var/log/v2raytge"
 META_FILE="$ETC_DIR/meta.env"
+VERSION_FILE="$ETC_DIR/VERSION"
 BACKUP_DIR="/var/backups/v2raytge"
 REPO_OWNER="AlirezaSayyari"
 REPO_NAME="V2rayTGE"
@@ -84,7 +85,9 @@ restore_latest_config_backup() {
 }
 
 installed_version() {
-  if [[ -r "$META_FILE" ]]; then
+  if [[ -r "$VERSION_FILE" ]]; then
+    tr -d '[:space:]' < "$VERSION_FILE"
+  elif [[ -r "$META_FILE" ]]; then
     # shellcheck disable=SC1090
     . "$META_FILE"
     printf "%s" "${TGE_CLI_VERSION:-unknown}"

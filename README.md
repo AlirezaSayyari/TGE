@@ -245,6 +245,8 @@ sudo tge upgrade
 
 The upgrade flow checks the latest GitHub release/tag, backs up `/opt/v2raytge/config.env`, downloads the selected archive, and runs the installer with the correct release raw URL so tagged upgrades do not accidentally install `main`.
 
+Release note: keep the root `VERSION` file equal to the GitHub tag you publish, for example `v1.2.0`. Installed systems read `/opt/v2raytge/VERSION` first, with `meta.env` kept as fallback metadata.
+
 ### Backup / Restore
 
 Use menu option 9 or:

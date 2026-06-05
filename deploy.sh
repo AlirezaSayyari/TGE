@@ -55,6 +55,14 @@ discover_cli_metadata(){
   branch_guess="$(echo "$REPO_RAW" | awk -F'/' '{print $NF}')"
   [[ -n "$branch_guess" ]] || branch_guess="main"
 
+  if [[ -r VERSION && "${TGE_CLI_VERSION:-}" == "v1.0.0" ]]; then
+    tag="$(tr -d '[:space:]' < VERSION)"
+    if [[ -n "$tag" ]]; then
+      TGE_CLI_VERSION="$tag"
+      [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+    fi
+  fi
+
   # Respect explicit user-provided values
   if [[ "${TGE_CLI_BRANCH:-}" == "main" && "$branch_guess" != "main" ]]; then
     TGE_CLI_BRANCH="$branch_guess"
@@ -427,15 +435,17 @@ install_files(){
   curl -fsSL "$REPO_RAW/tge/bin/tge-gre-ensure" -o /opt/tge/bin/tge-gre-ensure
   curl -fsSL "$REPO_RAW/tge/bin/tge-health"     -o /opt/tge/bin/tge-health
   curl -fsSL "$REPO_RAW/tge/bin/tge-logs"       -o /opt/tge/bin/tge-logs
+  curl -fsSL "$REPO_RAW/VERSION"                -o /opt/tge/VERSION || printf '%s\n' "$TGE_CLI_VERSION" > /opt/tge/VERSION
   curl -fsSL "$REPO_RAW/tge/systemd/tge-gre.service"   -o /opt/tge/systemd/tge-gre.service
   curl -fsSL "$REPO_RAW/tge/systemd/tge-apply.service" -o /opt/tge/systemd/tge-apply.service
   curl -fsSL "$REPO_RAW/tge/systemd/tge-apply.path"    -o /opt/tge/systemd/tge-apply.path
   curl -fsSL "$REPO_RAW/tge/systemd/tge-apply.timer"   -o /opt/tge/systemd/tge-apply.timer
 
   # Normalize line endings defensively in case files were committed with CRLF.
-  sed -i 's/\r$//' /opt/tge/bin/tge /opt/tge/bin/tge-config /opt/tge/bin/tge-apply /opt/tge/bin/tge-lib.sh /opt/tge/bin/tge-ctl /opt/tge/bin/tge-gre-ensure /opt/tge/bin/tge-health /opt/tge/bin/tge-logs /opt/tge/systemd/tge-gre.service /opt/tge/systemd/tge-apply.service /opt/tge/systemd/tge-apply.path /opt/tge/systemd/tge-apply.timer
+  sed -i 's/\r$//' /opt/tge/VERSION /opt/tge/bin/tge /opt/tge/bin/tge-config /opt/tge/bin/tge-apply /opt/tge/bin/tge-lib.sh /opt/tge/bin/tge-ctl /opt/tge/bin/tge-gre-ensure /opt/tge/bin/tge-health /opt/tge/bin/tge-logs /opt/tge/systemd/tge-gre.service /opt/tge/systemd/tge-apply.service /opt/tge/systemd/tge-apply.path /opt/tge/systemd/tge-apply.timer
 
   chmod +x /opt/tge/bin/tge /opt/tge/bin/tge-config /opt/tge/bin/tge-apply /opt/tge/bin/tge-ctl /opt/tge/bin/tge-gre-ensure /opt/tge/bin/tge-health /opt/tge/bin/tge-logs
+  chmod 0644 /opt/tge/VERSION
 
   # Install to standard locations
   install -m 0755 /opt/tge/bin/tge        /usr/local/bin/tge
@@ -446,6 +456,7 @@ install_files(){
   install -m 0755 /opt/tge/bin/tge-health     /usr/local/sbin/tge-health
   install -m 0755 /opt/tge/bin/tge-logs       /usr/local/sbin/tge-logs
   install -m 0644 /opt/tge/bin/tge-lib.sh /opt/v2raytge/tge-lib.sh
+  install -m 0644 /opt/tge/VERSION /opt/v2raytge/VERSION
 cat > /opt/v2raytge/meta.env <<EOF
 TGE_CLI_VERSION="$TGE_CLI_VERSION"
 TGE_CLI_BRANCH="$TGE_CLI_BRANCH"
