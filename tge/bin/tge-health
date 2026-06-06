@@ -167,10 +167,10 @@ if [[ -n "${LAN_CIDRS:-}" ]]; then
     fi
     if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
       if iptables -t nat -C POSTROUTING -s "$cidr" -o "$TUN_IF" -j MASQUERADE >/dev/null 2>&1; then
-        echo "[BAD] NAT $cidr -> $TUN_IF should not exist in server_gateway mode"
-        ok=0
+        echo "[OK]  NAT $cidr -> server gateway ($TUN_IF)"
       else
-        echo "[OK]  NAT skipped for $cidr (edge device handles NAT)"
+        echo "[BAD] NAT $cidr -> server gateway ($TUN_IF)"
+        ok=0
       fi
     elif iptables -t nat -C POSTROUTING -s "$cidr" -o "$TUN_IF" -j MASQUERADE >/dev/null 2>&1; then
       echo "[OK]  NAT $cidr -> $TUN_IF"

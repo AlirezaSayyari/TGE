@@ -455,8 +455,8 @@ else
   if [[ "$egress_mode" == "server_gateway" ]]; then
     echo "=== Server Gateway Egress ==="
     echo "Traffic entering the selected edge interface will use: $server_gateway via $server_gateway_if"
-    echo "No v2rayA/WireGuard egress tunnel or TGE NAT rule is configured in this mode."
-    echo "Keep NAT/PBR on the edge device, for example FortiGate."
+    echo "No v2rayA/WireGuard egress tunnel is used in this mode."
+    echo "TGE will MASQUERADE configured LAN CIDRs to the server IP before forwarding."
   else
     echo "=== WireGuard ==="
     echo "Interface: $wireguard_if"

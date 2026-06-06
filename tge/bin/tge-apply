@@ -355,14 +355,16 @@ if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
 
   if [[ -n "${LAN_CIDRS:-}" ]]; then
     for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
-      safe_iptables_del_nat "$cidr" "$SERVER_GATEWAY_IF" || true
       safe_iptables_del_nat "$cidr" "tun0" || true
       safe_iptables_del_nat "$cidr" "wg0" || true
+      iptables_ensure nat POSTROUTING "-s $cidr -o $SERVER_GATEWAY_IF -j MASQUERADE"
     done
+  else
+    log "WARN: LAN_CIDRS is empty; server_gateway has no source networks to NAT."
   fi
   delete_mangle_rule -o "$SERVER_GATEWAY_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
   ip route flush cache || true
-  log "OK: server_gateway uses main default route via $SERVER_GATEWAY dev $SERVER_GATEWAY_IF."
+  log "OK: server_gateway uses main default route via $SERVER_GATEWAY dev $SERVER_GATEWAY_IF with server-side MASQUERADE."
   exit 0
 fi
 

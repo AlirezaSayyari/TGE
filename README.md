@@ -17,7 +17,7 @@ Supported edge modes:
 Supported egress backends:
 - **v2rayA system-tun**: policy-routes LAN traffic to `tun0` created by v2rayA.
 - **WireGuard**: policy-routes LAN traffic to a `wg-quick` interface such as `wg0`; the wizard enforces `Table = off` so the server default route is not changed.
-- **Server default gateway**: bypasses `tun0`/`wg0` and forwards edge traffic with the host `main` default route. TGE does not create a separate policy table or add NAT in this mode; keep NAT/PBR on the edge device such as FortiGate.
+- **Server default gateway**: bypasses `tun0`/`wg0`, MASQUERADEs configured LAN CIDRs to the server IP, and forwards them with the host `main` default route. The upstream gateway therefore needs no LAN-source-specific return route or RPF exception.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -127,7 +127,7 @@ These policy rules are only used by the `v2raya_tun` and `wireguard` backends. I
 To let LAN subnets behind the edge device reach the Internet:
 - FORWARD: allow selected edge interface → selected egress interface
 - FORWARD: allow return selected egress interface → selected edge interface for `RELATED,ESTABLISHED`
-- NAT: `MASQUERADE` LAN CIDRs out of `tun0`/`wg0` only. In server-gateway mode, TGE does not add NAT; NAT should stay on the edge device.
+- NAT: `MASQUERADE` configured LAN CIDRs out of the selected egress interface in all three backends, including the server primary NIC in server-gateway mode.
 
 ### 4) MSS Clamp (fix “ping works but HTTPS/TLS hangs”)
 A very common real-world issue:
@@ -225,7 +225,7 @@ At the end it:
 
 In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
 
-In server-gateway mode, activation skips both v2rayA and WireGuard startup, forwards edge traffic with the host main default route, disables ICMP redirects for one-arm forwarding, and leaves NAT to the edge device.
+In server-gateway mode, activation skips both v2rayA and WireGuard startup, MASQUERADEs configured LAN CIDRs to the TGE server IP, and forwards them with the host main default route. This avoids source-specific RPF and return-route requirements on FortiGate or another upstream gateway.
 
 ### Edit Configuration
 

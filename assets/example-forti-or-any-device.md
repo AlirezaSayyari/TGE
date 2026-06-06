@@ -68,8 +68,8 @@ Use this when the edge device handles NAT/PBR and TGE should not forward traffic
 
 - The wizard stores `TGE_EGRESS_MODE=server_gateway`.
 - TGE routes edge traffic out via `SERVER_GATEWAY` on `SERVER_GATEWAY_IF`.
-- TGE does not add `MASQUERADE` rules in this mode.
-- On FortiGate, keep NAT and use PBR/static routing to send the desired traffic into the selected TGE edge path, such as the GRE tunnel.
+- TGE adds `MASQUERADE` rules for configured LAN CIDRs on the server gateway interface.
+- The upstream device sees the TGE server IP as the source, so no LAN-source-specific return route or RPF exception is required.
 
 Traffic path:
 
