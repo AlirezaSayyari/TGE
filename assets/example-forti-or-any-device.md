@@ -69,6 +69,7 @@ Use this when the edge device handles NAT/PBR and TGE should not forward traffic
 - The wizard stores `TGE_EGRESS_MODE=server_gateway`.
 - TGE routes edge traffic out via `SERVER_GATEWAY` on `SERVER_GATEWAY_IF`.
 - TGE adds `MASQUERADE` rules for configured LAN CIDRs on the server gateway interface.
+- TGE also MASQUERADEs probes sourced from the upstream gateway interface IP, allowing SD-WAN health checks to traverse the same one-arm path.
 - The upstream device sees the TGE server IP as the source, so no LAN-source-specific return route or RPF exception is required.
 
 Traffic path:

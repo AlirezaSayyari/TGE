@@ -17,7 +17,7 @@ Supported edge modes:
 Supported egress backends:
 - **v2rayA system-tun**: policy-routes LAN traffic to `tun0` created by v2rayA.
 - **WireGuard**: policy-routes LAN traffic to a `wg-quick` interface such as `wg0`; the wizard enforces `Table = off` so the server default route is not changed.
-- **Server default gateway**: bypasses `tun0`/`wg0`, MASQUERADEs configured LAN CIDRs to the server IP, and forwards them with the host `main` default route. The upstream gateway therefore needs no LAN-source-specific return route or RPF exception.
+- **Server default gateway**: bypasses `tun0`/`wg0`, MASQUERADEs configured LAN CIDRs and gateway-originated probes to the server IP, and forwards them with the host `main` default route. The upstream gateway therefore needs no LAN-source-specific return route or RPF exception.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -225,7 +225,7 @@ At the end it:
 
 In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
 
-In server-gateway mode, activation skips both v2rayA and WireGuard startup, MASQUERADEs configured LAN CIDRs to the TGE server IP, and forwards them with the host main default route. This avoids source-specific RPF and return-route requirements on FortiGate or another upstream gateway.
+In server-gateway mode, activation skips both v2rayA and WireGuard startup, MASQUERADEs configured LAN CIDRs plus probes sourced by the upstream gateway, and forwards them with the host main default route. This allows FortiGate SD-WAN health checks to traverse TGE without gateway-specific source routing or RPF exceptions.
 
 ### Edit Configuration
 

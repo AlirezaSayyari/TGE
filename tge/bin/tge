@@ -296,7 +296,7 @@ Prerequisites
 - Egress backend chosen in wizard:
   - v2rayA system-tun: uses tun0 from v2rayA
   - WireGuard: uses wg0 or another wg-quick interface; config is forced to Table=off
-  - Server default gateway: bypasses tun0/wg0, NATs configured LAN CIDRs on TGE, and sends them through the server gateway
+  - Server default gateway: bypasses tun0/wg0, NATs LAN traffic and gateway health probes on TGE, then uses the server gateway
 - Edge device PBR/static routes that send LAN CIDRs toward the selected edge path
 
 v2rayA GUI

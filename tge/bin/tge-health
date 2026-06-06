@@ -107,6 +107,9 @@ server_gateway_redirects_disabled(){
   [[ "$(sysctl -n net.ipv4.conf.all.send_redirects 2>/dev/null)" == "0" ]] &&
   [[ "$(sysctl -n "net.ipv4.conf.${SERVER_GATEWAY_IF}.send_redirects" 2>/dev/null)" == "0" ]]
 }
+server_gateway_probe_nat_ok(){
+  iptables -t nat -C POSTROUTING -s "$SERVER_GATEWAY/32" -o "$SERVER_GATEWAY_IF" -j MASQUERADE >/dev/null 2>&1
+}
 if [[ "$desired" == "legacy" ]]; then
   chk "iptables legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
 else
@@ -136,6 +139,7 @@ if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
   chk "main default via server gateway" server_gateway_main_default_ok
   chk "ICMP redirects disabled" server_gateway_redirects_disabled
   chk "FORWARD edge->server gateway" iptables -C FORWARD -i "$EDGE_IF" -o "$SERVER_GATEWAY_IF" -j ACCEPT
+  chk "gateway/SD-WAN probe NAT" server_gateway_probe_nat_ok
 else
   chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
   if [[ "$TGE_EDGE_MODE" == "gre" ]]; then

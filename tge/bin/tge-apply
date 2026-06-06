@@ -362,6 +362,10 @@ if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
   else
     log "WARN: LAN_CIDRS is empty; server_gateway has no source networks to NAT."
   fi
+  # FortiGate/SD-WAN probes are generated with the gateway interface address
+  # as their source. NAT that source too so probes can hairpin through TGE and
+  # return to the originating gateway without per-device exceptions.
+  iptables_ensure nat POSTROUTING "-s $SERVER_GATEWAY/32 -o $SERVER_GATEWAY_IF -j MASQUERADE"
   delete_mangle_rule -o "$SERVER_GATEWAY_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
   ip route flush cache || true
   log "OK: server_gateway uses main default route via $SERVER_GATEWAY dev $SERVER_GATEWAY_IF with server-side MASQUERADE."

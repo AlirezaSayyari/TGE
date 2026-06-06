@@ -213,6 +213,9 @@ deactivate() {
       fi
     done
   fi
+  if [[ "$TGE_EGRESS_MODE" == "server_gateway" && -n "${SERVER_GATEWAY:-}" ]]; then
+    safe_iptables_del_nat "$SERVER_GATEWAY/32" "$SERVER_GATEWAY_IF" || true
+  fi
 
   # Optional: stop v2rayA (comment out if you prefer leaving it running)
   # compose_down

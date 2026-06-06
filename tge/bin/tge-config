@@ -457,6 +457,7 @@ else
     echo "Traffic entering the selected edge interface will use: $server_gateway via $server_gateway_if"
     echo "No v2rayA/WireGuard egress tunnel is used in this mode."
     echo "TGE will MASQUERADE configured LAN CIDRs to the server IP before forwarding."
+    echo "Gateway-originated health-check probes are also MASQUERADEd for one-arm return."
   else
     echo "=== WireGuard ==="
     echo "Interface: $wireguard_if"
