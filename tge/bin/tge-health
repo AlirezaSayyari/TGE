@@ -93,6 +93,20 @@ gre_mtu_match(){
 stale_singbox_rules_absent(){
   ! ip -o rule show 2>/dev/null | grep -qE '^(9000:|9001:|9002:|9010:).*(lookup 2022|goto 9010|suppress_prefixlength|nop)'
 }
+server_gateway_policy_rules_absent(){
+  ! ip -o rule show 2>/dev/null | grep -qE "^(100:|110:).*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"
+}
+server_gateway_table_empty(){
+  [[ -z "$(ip route show table "$V2RAY_TABLE" 2>/dev/null)" ]] &&
+  [[ -z "$(ip route show table "$V2RAY_TABLE_ID" 2>/dev/null)" ]]
+}
+server_gateway_main_default_ok(){
+  ip route show table main default 2>/dev/null | grep -qE "^default via ${SERVER_GATEWAY//./\\.} dev ${SERVER_GATEWAY_IF}"
+}
+server_gateway_redirects_disabled(){
+  [[ "$(sysctl -n net.ipv4.conf.all.send_redirects 2>/dev/null)" == "0" ]] &&
+  [[ "$(sysctl -n "net.ipv4.conf.${SERVER_GATEWAY_IF}.send_redirects" 2>/dev/null)" == "0" ]]
+}
 if [[ "$desired" == "legacy" ]]; then
   chk "iptables legacy" bash -lc "iptables --version 2>/dev/null | grep -qi legacy"
 else
@@ -116,25 +130,27 @@ if [[ "$TGE_EGRESS_MODE" == "wireguard" ]]; then
 elif [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
   chk "no stale edge->tun0/wg0 FORWARD rules" no_stale_tunnel_forward
 fi
-chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
-  chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
-fi
-if [[ "$TGE_EGRESS_MODE" == "server_gateway" && "$TUN_IF" == "$EDGE_IF" ]]; then
-  echo "[OK]  rule 110 skipped (edge and server egress interface are the same)"
-else
-  chk "rule 110" bash -lc "ip -o rule show | grep -qE '110:.*iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
-fi
 if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
-  chk "route default in $V2RAY_TABLE via server gateway" bash -lc "ip route show table $V2RAY_TABLE | grep -qE \"^default via ${SERVER_GATEWAY//./\\.} dev $SERVER_GATEWAY_IF\" || ip route show table $V2RAY_TABLE_ID | grep -qE \"^default via ${SERVER_GATEWAY//./\\.} dev $SERVER_GATEWAY_IF\""
+  chk "TGE policy rules absent" server_gateway_policy_rules_absent
+  chk "$V2RAY_TABLE table empty" server_gateway_table_empty
+  chk "main default via server gateway" server_gateway_main_default_ok
+  chk "ICMP redirects disabled" server_gateway_redirects_disabled
+  chk "FORWARD edge->server gateway" iptables -C FORWARD -i "$EDGE_IF" -o "$SERVER_GATEWAY_IF" -j ACCEPT
 else
+  chk "rule 100" bash -lc "ip -o rule show | grep -qE '100:.*iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $EDGE_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
+  if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+    chk "rule 101" bash -lc "ip -o rule show | grep -qE '101:.*to $GRE_SUBNET.*lookup main' || ip -o rule show | grep -qE 'to $GRE_SUBNET.*lookup main'"
+  fi
+  chk "rule 110" bash -lc "ip -o rule show | grep -qE '110:.*iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)' || ip -o rule show | grep -qE 'iif $TUN_IF.*lookup ($V2RAY_TABLE|$V2RAY_TABLE_ID)'"
   chk "route default in $V2RAY_TABLE" bash -lc "ip route show table $V2RAY_TABLE | grep -qE \"^default dev $TUN_IF\" || ip route show table $V2RAY_TABLE_ID | grep -qE \"^default dev $TUN_IF\""
+  chk "FORWARD edge->egress" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
+  chk "FORWARD egress->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 fi
-chk "FORWARD edge->egress" iptables -C FORWARD -i "$EDGE_IF" -o "$TUN_IF" -j ACCEPT
-chk "FORWARD egress->edge established" iptables -C FORWARD -i "$TUN_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
 if [[ -n "${LAN_CIDRS:-}" ]]; then
   for cidr in $(echo "$LAN_CIDRS" | tr "," " "); do
-    if [[ "$TGE_EDGE_MODE" == "direct" && -n "$DIRECT_EDGE_GW" ]]; then
+    if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+      echo "[OK]  $cidr returns through main default route"
+    elif [[ "$TGE_EDGE_MODE" == "direct" && -n "$DIRECT_EDGE_GW" ]]; then
       if ip route show table "$V2RAY_TABLE" "$cidr" 2>/dev/null | grep -qE "^${cidr//\//\\/} via ${DIRECT_EDGE_GW//./\\.} dev ${EDGE_IF}"; then
         echo "[OK]  route $cidr via $DIRECT_EDGE_GW dev $EDGE_IF in $V2RAY_TABLE"
       else
@@ -166,7 +182,9 @@ if [[ -n "${LAN_CIDRS:-}" ]]; then
 else
   echo "[WARN] LAN_CIDRS is empty in config."
 fi
-if [[ "$TGE_EDGE_MODE" == "gre" ]]; then
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  echo "[OK]  tunnel MSS rules skipped in server_gateway mode"
+elif [[ "$TGE_EDGE_MODE" == "gre" ]]; then
   chk "MSS clamp" iptables -t mangle -C FORWARD -i "$GRE_IF" -o "$TUN_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --set-mss "$MSS_CLAMP"
 else
   echo "[OK]  MSS clamp skipped in direct mode"

@@ -17,7 +17,7 @@ Supported edge modes:
 Supported egress backends:
 - **v2rayA system-tun**: policy-routes LAN traffic to `tun0` created by v2rayA.
 - **WireGuard**: policy-routes LAN traffic to a `wg-quick` interface such as `wg0`; the wizard enforces `Table = off` so the server default route is not changed.
-- **Server default gateway**: bypasses `tun0`/`wg0` and policy-routes edge traffic out through the server gateway. TGE does not add NAT in this mode; keep NAT/PBR on the edge device such as FortiGate.
+- **Server default gateway**: bypasses `tun0`/`wg0` and forwards edge traffic with the host `main` default route. TGE does not create a separate policy table or add NAT in this mode; keep NAT/PBR on the edge device such as FortiGate.
 
 This project is designed for real production environments:
 - **No iptables flush**
@@ -83,7 +83,7 @@ LAN (one or multiple CIDRs)
 Edge Device (GRE or direct)
 ↓
 EgressGW selected edge interface
-↓  Policy Routing (table: v2ray)
+↓  Linux forwarding (main default route)
 Server default gateway on primary NIC
 ↓
 Internet
@@ -120,6 +120,8 @@ V2rayTGE ensures these rules exist (and does not delete/flush others):
 - `pref 100`: traffic **incoming on selected edge interface** → `lookup v2ray`
 - `pref 110`: helper rule for traffic involving the selected egress interface → `lookup v2ray`
 - `pref 101`: keep GRE subnet stable in `main` (GRE mode only)
+
+These policy rules are only used by the `v2raya_tun` and `wireguard` backends. In `server_gateway` mode, TGE removes its old `pref 100/110` rules, empties its dedicated table, and uses the host `main` default route.
 
 ### 3) Forwarding + NAT
 To let LAN subnets behind the edge device reach the Internet:
@@ -223,7 +225,7 @@ At the end it:
 
 In WireGuard mode, activation starts `wg-quick@<interface>`, skips v2rayA startup, and uses the WireGuard interface as the egress tunnel.
 
-In server-gateway mode, activation skips both v2rayA and WireGuard startup, routes edge traffic out through the server gateway, and leaves NAT to the edge device.
+In server-gateway mode, activation skips both v2rayA and WireGuard startup, forwards edge traffic with the host main default route, disables ICMP redirects for one-arm forwarding, and leaves NAT to the edge device.
 
 ### Edit Configuration
 

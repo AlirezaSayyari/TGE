@@ -3,6 +3,15 @@ set -euo pipefail
 need_root() { [[ "${EUID:-$(id -u)}" -eq 0 ]] || { echo "sudo required"; exit 1; }; }
 need_root
 
+CFG="/opt/v2raytge/config.env"
+TGE_EGRESS_MODE="v2raya_tun"
+V2RAY_TABLE="v2ray"
+V2RAY_TABLE_ID="100"
+if [[ -r "$CFG" ]]; then
+  # shellcheck disable=SC1090
+  . "$CFG"
+fi
+
 echo "=== Recent logs ==="
 echo "--- systemd (tge-gre) ---"
 journalctl -u tge-gre.service -b --no-pager -n 80 || true
@@ -10,18 +19,34 @@ echo
 echo "--- systemd (tge-apply) ---"
 journalctl -u tge-apply.service -b --no-pager -n 120 || true
 echo
-echo "--- docker (v2rayA) ---"
-docker ps | egrep -i 'v2ray|v2raya' || true
-echo
-echo "--- WireGuard ---"
-wg show 2>/dev/null || true
-systemctl status 'wg-quick@*' --no-pager -l 2>/dev/null || true
-echo
+case "$TGE_EGRESS_MODE" in
+  v2raya_tun)
+    echo "--- docker (v2rayA) ---"
+    docker ps | egrep -i 'v2ray|v2raya' || true
+    echo
+    ;;
+  wireguard)
+    echo "--- WireGuard ---"
+    wg show 2>/dev/null || true
+    systemctl status 'wg-quick@*' --no-pager -l 2>/dev/null || true
+    echo
+    ;;
+  server_gateway)
+    echo "--- tunnel egress ---"
+    echo "Skipped: server_gateway does not use v2rayA or WireGuard."
+    echo
+    ;;
+esac
 echo "--- ip rules ---"
 ip -o rule show || true
 echo
-echo "--- routes (v2ray table) ---"
-ip route show table v2ray 2>/dev/null || ip route show table 100 2>/dev/null || true
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  echo "--- routes (main table) ---"
+  ip route show table main || true
+else
+  echo "--- routes ($V2RAY_TABLE table) ---"
+  ip route show table "$V2RAY_TABLE" 2>/dev/null || ip route show table "$V2RAY_TABLE_ID" 2>/dev/null || true
+fi
 echo
 echo "--- iptables FORWARD/NAT ---"
 iptables -S FORWARD || true

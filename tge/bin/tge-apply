@@ -82,6 +82,11 @@ if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
   TUN_IF="$SERVER_GATEWAY_IF"
   SERVER_GATEWAY="${SERVER_GATEWAY:-$(default_gateway_for_iface "$SERVER_GATEWAY_IF")}"
   [[ -n "$SERVER_GATEWAY" ]] || { log "ERROR: SERVER_GATEWAY is required in server_gateway mode."; exit 2; }
+  if ! ip route show table main default 2>/dev/null | grep -qE "^default via ${SERVER_GATEWAY//./\\.} dev ${SERVER_GATEWAY_IF}"; then
+    log "ERROR: main default route is not via $SERVER_GATEWAY dev $SERVER_GATEWAY_IF."
+    log "ERROR: server_gateway mode does not replace the host default route."
+    exit 2
+  fi
 fi
 
 wireguard_runtime_allowedips_ok(){
@@ -264,6 +269,13 @@ sysctl -w net.ipv4.conf.all.rp_filter=0 >/dev/null
 sysctl -w net.ipv4.conf.default.rp_filter=0 >/dev/null
 sysctl -w "net.ipv4.conf.${EDGE_IF}.rp_filter=0" >/dev/null || true
 sysctl -w "net.ipv4.conf.${TUN_IF}.rp_filter=0"  >/dev/null || true
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  # One-arm forwarding (in and out through the primary NIC) must not emit
+  # redirects back to the edge device.
+  sysctl -w net.ipv4.conf.all.send_redirects=0 >/dev/null
+  sysctl -w net.ipv4.conf.default.send_redirects=0 >/dev/null
+  sysctl -w "net.ipv4.conf.${SERVER_GATEWAY_IF}.send_redirects=0" >/dev/null || true
+fi
 
 delete_rule_pref_if_matching(){
   local pref="$1" regex="$2" line
@@ -292,6 +304,16 @@ delete_mangle_rule(){
   while iptables -t mangle -D FORWARD "$@" 2>/dev/null; do :; done
 }
 
+delete_forward_rule(){
+  while iptables -D FORWARD "$@" 2>/dev/null; do :; done
+}
+
+ensure_forward_insert_first(){
+  if ! iptables -C FORWARD "$@" 2>/dev/null; then
+    iptables -I FORWARD 1 "$@"
+  fi
+}
+
 cleanup_stale_egress_if(){
   local old_if="$1" cidr
   [[ "$old_if" != "$TUN_IF" ]] || return 0
@@ -316,6 +338,33 @@ cleanup_stale_egress_if(){
 cleanup_stale_singbox_rules
 cleanup_stale_egress_if "tun0"
 cleanup_stale_egress_if "wg0"
+
+if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
+  # This mode deliberately uses the host main table. Remove TGE policy-routing
+  # state left by tun0/wg0 or older server-gateway implementations.
+  delete_rule_pref_if_matching 100 "iif ${EDGE_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"
+  delete_rule_pref_if_matching 110 "iif (tun0|wg0)( \\[detached\\])? .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"
+  ip route flush table "$V2RAY_TABLE" >/dev/null 2>&1 || true
+  ip route flush table "$V2RAY_TABLE_ID" >/dev/null 2>&1 || true
+
+  # Remove old appended/direct rules and install one unconditional hairpin
+  # forwarding rule before Docker's FORWARD jumps.
+  delete_forward_rule -i "$EDGE_IF" -o "$SERVER_GATEWAY_IF" -j ACCEPT
+  delete_forward_rule -i "$SERVER_GATEWAY_IF" -o "$EDGE_IF" -m conntrack --ctstate RELATED,ESTABLISHED -j ACCEPT
+  ensure_forward_insert_first -i "$EDGE_IF" -o "$SERVER_GATEWAY_IF" -j ACCEPT
+
+  if [[ -n "${LAN_CIDRS:-}" ]]; then
+    for cidr in $(echo "$LAN_CIDRS" | tr ',' ' '); do
+      safe_iptables_del_nat "$cidr" "$SERVER_GATEWAY_IF" || true
+      safe_iptables_del_nat "$cidr" "tun0" || true
+      safe_iptables_del_nat "$cidr" "wg0" || true
+    done
+  fi
+  delete_mangle_rule -o "$SERVER_GATEWAY_IF" -p tcp --tcp-flags SYN,RST SYN -j TCPMSS --clamp-mss-to-pmtu
+  ip route flush cache || true
+  log "OK: server_gateway uses main default route via $SERVER_GATEWAY dev $SERVER_GATEWAY_IF."
+  exit 0
+fi
 
 # 2) rt_tables ensure (append-only if missing)
 ensure_rt_table "$V2RAY_TABLE_ID" "$V2RAY_TABLE"

@@ -95,6 +95,16 @@ disable_units() {
   systemctl disable --now tge-gre.service || true
 }
 
+delete_rule_pref_if_matching() {
+  local pref="$1" regex="$2" line
+  while true; do
+    line="$(ip -o rule show 2>/dev/null | awk -v p="${pref}:" '$1==p{print; exit}')"
+    [[ -n "$line" ]] || return 0
+    echo "$line" | grep -qE "$regex" || return 0
+    ip rule del pref "$pref" || true
+  done
+}
+
 activate() {
   load_cfg
   echo "[tge-ctl] Activating..."
@@ -187,10 +197,10 @@ deactivate() {
   if [[ "$TGE_EGRESS_MODE" == "server_gateway" ]]; then
     safe_iptables_del_forward "$EDGE_IF" "tun0" || true
     safe_iptables_del_forward "$EDGE_IF" "wg0" || true
-    safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE"
-    safe_ip_rule_del 110 "iif tun0 lookup $V2RAY_TABLE_ID"
-    safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE"
-    safe_ip_rule_del 110 "iif wg0 lookup $V2RAY_TABLE_ID"
+    delete_rule_pref_if_matching 100 "iif ${EDGE_IF} .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"
+    delete_rule_pref_if_matching 110 "iif (tun0|wg0)( \\[detached\\])? .*lookup (${V2RAY_TABLE}|${V2RAY_TABLE_ID})"
+    ip route flush table "$V2RAY_TABLE" >/dev/null 2>&1 || true
+    ip route flush table "$V2RAY_TABLE_ID" >/dev/null 2>&1 || true
   fi
 
   # NAT per LAN CIDR
