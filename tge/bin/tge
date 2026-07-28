@@ -7,27 +7,40 @@ LOG_DIR="/var/log/v2raytge"
 META_FILE="$ETC_DIR/meta.env"
 VERSION_FILE="$ETC_DIR/VERSION"
 BACKUP_DIR="/var/backups/v2raytge"
-REPO_OWNER="AlirezaSayyari"
-REPO_NAME="V2rayTGE"
+CANONICAL_REPOSITORY="runovelhq/tge"
+REPOSITORY_CANDIDATES=(
+  "$CANONICAL_REPOSITORY"
+  "AlirezaSayyari/TGE"
+  "AlirezaSayyari/V2rayTGE"
+)
+GH_REPO_WAS_SET="${GH_REPO+x}"
+REPO_RAW_WAS_SET="${REPO_RAW+x}"
+SOURCE_REF_WAS_SET="${TGE_SOURCE_REF+x}"
+GH_REPO="${GH_REPO:-}"
+REPO_RAW="${REPO_RAW:-}"
+SOURCE_REF="${TGE_SOURCE_REF:-main}"
 REPO_BRANCH="${TGE_CLI_BRANCH:-main}"
-UPDATE_CACHE_FILE="/tmp/v2raytge-latest-version"
+UPDATE_CACHE_DIR="/run/v2raytge"
+UPDATE_CACHE_FILE="$UPDATE_CACHE_DIR/latest-version"
 UPDATE_CACHE_TTL=3600
 
-mkdir -p "$ETC_DIR" "$LOG_DIR" 2>/dev/null || true
-
-if [[ -r "$META_FILE" ]]; then
-  # shellcheck disable=SC1090
-  . "$META_FILE"
-fi
-if [[ -r "$ETC_DIR/tge-lib.sh" ]]; then
-  # shellcheck disable=SC1090
-  . "$ETC_DIR/tge-lib.sh"
-fi
-
 CLI_VERSION="${TGE_CLI_VERSION:-v1.0.0}"
-REPO_BRANCH="${TGE_CLI_BRANCH:-$REPO_BRANCH}"
 LAST_ERROR=""
 FIRST_RENDER=1
+
+load_runtime_files() {
+  mkdir -p "$ETC_DIR" "$LOG_DIR" 2>/dev/null || true
+  if [[ -r "$META_FILE" ]]; then
+    # shellcheck disable=SC1090
+    . "$META_FILE"
+  fi
+  if [[ -r "$ETC_DIR/tge-lib.sh" ]]; then
+    # shellcheck disable=SC1090
+    . "$ETC_DIR/tge-lib.sh"
+  fi
+  CLI_VERSION="${TGE_CLI_VERSION:-v1.0.0}"
+  REPO_BRANCH="${TGE_CLI_BRANCH:-$REPO_BRANCH}"
+}
 
 pause(){ echo "Press Enter..."; read -r; }
 
@@ -44,11 +57,23 @@ backup_config() {
     echo "No $CFG found; nothing to back up."
     return 0
   fi
-  timestamp="$(date +%Y%m%d-%H%M%S)"
+  if ! timestamp="$(date +%Y%m%d-%H%M%S)"; then
+    echo "Could not generate backup timestamp." >&2
+    return 1
+  fi
   backup_file="$BACKUP_DIR/config.env.$timestamp.$reason.bak"
-  mkdir -p "$BACKUP_DIR"
-  cp -p "$CFG" "$backup_file"
-  chmod 600 "$backup_file"
+  if ! mkdir -p "$BACKUP_DIR"; then
+    echo "Could not create backup directory: $BACKUP_DIR" >&2
+    return 1
+  fi
+  if ! cp -p "$CFG" "$backup_file"; then
+    echo "Could not copy configuration backup to: $backup_file" >&2
+    return 1
+  fi
+  if ! chmod 600 "$backup_file"; then
+    echo "Could not secure configuration backup: $backup_file" >&2
+    return 1
+  fi
   echo "Backup created: $backup_file"
 }
 
@@ -103,65 +128,283 @@ normalize_version() {
   printf "%s" "$version"
 }
 
+valid_repository() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ && "$1" != *..* ]]
+}
+
+valid_ref() {
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != /* && "$1" != */ && "$1" != *..* && "$1" != *//* ]]
+}
+
+valid_simple_ref() {
+  valid_ref "$1" && [[ "$1" != */* ]]
+}
+
+stable_version() {
+  [[ "$1" =~ ^[vV]?[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]
+}
+
+url_has_credentials() {
+  local authority="${1#https://}"
+  authority="${authority%%/*}"
+  [[ "$authority" == *@* ]]
+}
+
 version_gt() {
-  local left right
+  local left right lmaj lmin lpat rmaj rmin rpat
+  stable_version "$1" && stable_version "$2" || return 1
   left="$(normalize_version "$1")"
   right="$(normalize_version "$2")"
-  if command -v sort >/dev/null 2>&1; then
-    [[ "$(printf '%s\n%s\n' "$right" "$left" | sort -V | tail -n 1)" == "$left" && "$left" != "$right" ]]
+  IFS=. read -r lmaj lmin lpat <<< "$left"
+  IFS=. read -r rmaj rmin rpat <<< "$right"
+  (( 10#$lmaj > 10#$rmaj ||
+     (10#$lmaj == 10#$rmaj && 10#$lmin > 10#$rmin) ||
+     (10#$lmaj == 10#$rmaj && 10#$lmin == 10#$rmin && 10#$lpat > 10#$rpat) ))
+}
+
+raw_url_parts() {
+  local raw="$1" rest owner repo ref
+  [[ "$raw" != *\?* && "$raw" != *\#* ]] || return 1
+  [[ "$raw" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]] || return 1
+  rest="${raw#https://raw.githubusercontent.com/}"
+  owner="${rest%%/*}"; rest="${rest#*/}"
+  repo="${rest%%/*}"; ref="${rest#*/}"
+  valid_repository "$owner/$repo" && valid_simple_ref "$ref" || return 1
+  printf '%s/%s|%s\n' "$owner" "$repo" "$ref"
+}
+
+github_api_get() {
+  local url="$1" response rc
+  response="$(curl -sS -L --connect-timeout 4 --max-time 10 -w $'\n%{http_code}' "$url" 2>&1)"
+  rc=$?
+  API_BODY=""; API_CODE="000"; API_ERROR=""
+  if (( rc != 0 )); then
+    case "$rc" in
+      6) API_ERROR="DNS resolution error" ;;
+      7) API_ERROR="connection error" ;;
+      28) API_ERROR="network timeout" ;;
+      *) API_ERROR="curl error $rc" ;;
+    esac
+    return 2
+  fi
+  API_CODE="${response##*$'\n'}"
+  API_BODY="${response%$'\n'*}"
+  case "$API_CODE" in
+    200) return 0 ;;
+    404) return 1 ;;
+    403|429) API_ERROR="rate limited or forbidden (HTTP $API_CODE)"; return 2 ;;
+    *) API_ERROR="GitHub API failure (HTTP $API_CODE)"; return 2 ;;
+  esac
+}
+
+resolve_repository() {
+  local parts raw_repo raw_ref candidate result full_name
+  RESOLVED_REPOSITORY=""
+  RESOLVED_REF=""
+  RESOLVED_REF_EXPLICIT=0
+
+  if [[ -n "$REPO_RAW_WAS_SET" ]]; then
+    if [[ "$REPO_RAW" != https://* ]] || url_has_credentials "$REPO_RAW" || [[ "$REPO_RAW" == *\?* || "$REPO_RAW" == *\#* ]]; then
+      echo "Repository override error: REPO_RAW must be a credential-free HTTPS URL without query or fragment." >&2
+      return 2
+    fi
+    if parts="$(raw_url_parts "$REPO_RAW" 2>/dev/null)"; then
+      raw_repo="${parts%%|*}"
+      raw_ref="${parts#*|}"
+      if [[ -n "$GH_REPO_WAS_SET" && "$GH_REPO" != "$raw_repo" ]]; then
+        echo "Repository override error: GH_REPO and REPO_RAW select different repositories." >&2
+        return 2
+      fi
+      if [[ -n "$SOURCE_REF_WAS_SET" && "$SOURCE_REF" != "$raw_ref" ]]; then
+        echo "Repository override error: TGE_SOURCE_REF and REPO_RAW select different refs." >&2
+        return 2
+      fi
+      RESOLVED_REPOSITORY="$raw_repo"
+      RESOLVED_REF="$raw_ref"
+      RESOLVED_REF_EXPLICIT=1
+    elif [[ "$REPO_RAW" == https://raw.githubusercontent.com/* ]]; then
+      echo "Repository override error: malformed raw URL or ambiguous slash-containing ref." >&2
+      return 2
+    else
+      echo "Repository override error: tge upgrade requires REPO_RAW to be a GitHub raw URL." >&2
+      return 2
+    fi
+  elif [[ -n "$GH_REPO_WAS_SET" ]]; then
+    valid_repository "$GH_REPO" || { echo "Repository override error: GH_REPO must be owner/repository." >&2; return 2; }
+    RESOLVED_REPOSITORY="$GH_REPO"
+    if [[ -n "$SOURCE_REF_WAS_SET" ]]; then
+      valid_ref "$SOURCE_REF" || { echo "Repository override error: invalid TGE_SOURCE_REF." >&2; return 2; }
+      RESOLVED_REF="$SOURCE_REF"
+      RESOLVED_REF_EXPLICIT=1
+    fi
   else
-    [[ "$1" != "$2" ]]
+    for candidate in "${REPOSITORY_CANDIDATES[@]}"; do
+      if github_api_get "https://api.github.com/repos/$candidate"; then
+        full_name="$(printf '%s' "$API_BODY" | sed -n 's/.*"full_name"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]*\/[A-Za-z0-9._-]*\)".*/\1/p' | head -n 1)"
+        if valid_repository "$full_name"; then
+          RESOLVED_REPOSITORY="$full_name"
+          break
+        fi
+        echo "Repository check for $candidate returned malformed GitHub metadata." >&2
+        return 2
+      else
+        result=$?
+        (( result == 1 )) && continue
+        echo "Repository check for $candidate failed: $API_ERROR." >&2
+        return 2
+      fi
+    done
+  fi
+
+  if [[ -z "$RESOLVED_REPOSITORY" ]]; then
+    echo "No usable TGE repository was found." >&2
+    return 1
   fi
 }
 
+highest_version_from_tags() {
+  local json="$1" candidate highest=""
+  while IFS= read -r candidate; do
+    candidate="${candidate#*\"name\"}"
+    candidate="${candidate#*\"}"
+    candidate="${candidate%%\"*}"
+    stable_version "$candidate" || continue
+    if [[ -z "$highest" ]] || version_gt "$candidate" "$highest"; then
+      highest="$candidate"
+    fi
+  done < <(printf '%s' "$json" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)
+  printf '%s' "$highest"
+}
+
 fetch_latest_version() {
-  local response latest_release latest_tag latest
+  local latest_release latest_tag latest
   command -v curl >/dev/null 2>&1 || return 1
-  response="$(curl -fsSL --connect-timeout 3 --max-time 8 "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/releases/latest" 2>/dev/null || true)"
-  latest_release="$(printf "%s" "$response" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
-  response="$(curl -fsSL --connect-timeout 3 --max-time 8 "https://api.github.com/repos/$REPO_OWNER/$REPO_NAME/tags" 2>/dev/null || true)"
-  latest_tag="$(printf "%s" "$response" | sed -n 's/.*"name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+  [[ -n "${RESOLVED_REPOSITORY:-}" ]] || return 1
+  latest_release=""; latest_tag=""
+  if github_api_get "https://api.github.com/repos/$RESOLVED_REPOSITORY/releases/latest"; then
+    latest_release="$(printf '%s' "$API_BODY" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    stable_version "$latest_release" || latest_release=""
+  fi
+  if github_api_get "https://api.github.com/repos/$RESOLVED_REPOSITORY/tags?per_page=100"; then
+    latest_tag="$(highest_version_from_tags "$API_BODY")"
+  fi
   latest="$latest_release"
   if [[ -z "$latest" ]] || { [[ -n "$latest_tag" ]] && version_gt "$latest_tag" "$latest"; }; then
     latest="$latest_tag"
   fi
   [[ -n "$latest" ]] || return 1
-  printf "%s" "$latest"
+  printf '%s|%s' "$RESOLVED_REPOSITORY" "$latest"
+}
+
+build_upgrade_urls() {
+  local repo="$1" ref="$2" kind="$3"
+  if [[ "$kind" == "branch" ]]; then
+    UPGRADE_SOURCE_URL="https://github.com/$repo/archive/refs/heads/$ref.tar.gz"
+  else
+    UPGRADE_SOURCE_URL="https://github.com/$repo/archive/refs/tags/$ref.tar.gz"
+  fi
+  UPGRADE_RAW_URL="https://raw.githubusercontent.com/$repo/$ref"
+}
+
+prepare_cache_dir() {
+  local expected_uid="${1:-0}" owner mode
+  if [[ -L "$UPDATE_CACHE_DIR" ]]; then return 1; fi
+  mkdir -p "$UPDATE_CACHE_DIR" || return 1
+  [[ -d "$UPDATE_CACHE_DIR" && ! -L "$UPDATE_CACHE_DIR" ]] || return 1
+  owner="$(stat -c %u "$UPDATE_CACHE_DIR" 2>/dev/null)" || return 1
+  [[ "$owner" == "$expected_uid" ]] || return 1
+  chmod 0755 "$UPDATE_CACHE_DIR" || return 1
+  mode="$(stat -c %a "$UPDATE_CACHE_DIR" 2>/dev/null)" || return 1
+  [[ "$mode" == "755" ]] || return 1
+}
+
+cache_file_safe() {
+  local expected_uid="${1:-0}" owner mode
+  [[ -L "$UPDATE_CACHE_FILE" ]] && return 1
+  [[ ! -e "$UPDATE_CACHE_FILE" ]] && return 0
+  [[ -f "$UPDATE_CACHE_FILE" && ! -L "$UPDATE_CACHE_FILE" ]] || return 1
+  owner="$(stat -c %u "$UPDATE_CACHE_FILE" 2>/dev/null)" || return 1
+  mode="$(stat -c %a "$UPDATE_CACHE_FILE" 2>/dev/null)" || return 1
+  [[ "$owner" == "$expected_uid" ]] && (( (8#$mode & 0022) == 0 ))
+}
+
+write_update_cache() {
+  local record="$1" expected_uid="${2:-0}" tmp
+  prepare_cache_dir "$expected_uid" && cache_file_safe "$expected_uid" || return 1
+  tmp="$(mktemp "$UPDATE_CACHE_DIR/.latest-version.XXXXXX")" || return 1
+  chmod 0644 "$tmp" || { rm -f "$tmp"; return 1; }
+  if [[ "$expected_uid" == 0 ]]; then chown root:root "$tmp" || { rm -f "$tmp"; return 1; }; fi
+  printf '%s' "$record" > "$tmp" || { rm -f "$tmp"; return 1; }
+  mv -fT "$tmp" "$UPDATE_CACHE_FILE"
+}
+
+clear_update_cache() {
+  prepare_cache_dir 0 && cache_file_safe 0 || return 1
+  [[ -e "$UPDATE_CACHE_FILE" ]] || return 0
+  rm -f -- "$UPDATE_CACHE_FILE"
+}
+
+valid_cache_record() {
+  [[ "$1" =~ ^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+\|[vV]?[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]
+}
+
+read_cache_record() {
+  local file="$1" byte
+  local -a lines=()
+  for byte in $(od -An -v -t u1 "$file" 2>/dev/null); do
+    (( byte == 10 || (byte >= 32 && byte <= 126) )) || return 1
+  done
+  mapfile -t lines < "$file" || return 1
+  (( ${#lines[@]} == 1 )) || return 1
+  [[ "${lines[0]}" != *$'\r'* ]] || return 1
+  valid_cache_record "${lines[0]}" || return 1
+  CACHE_RECORD="${lines[0]}"
 }
 
 latest_version_cached() {
-  local now cache_mtime latest
+  local now cache_mtime record cached_repo cached_version
   now="$(date +%s)"
-  if [[ -f "$UPDATE_CACHE_FILE" ]]; then
+  resolve_repository || return 1
+  if prepare_cache_dir 0 && cache_file_safe 0 && [[ -f "$UPDATE_CACHE_FILE" ]]; then
     cache_mtime="$(stat -c %Y "$UPDATE_CACHE_FILE" 2>/dev/null || echo 0)"
     if (( now - cache_mtime < UPDATE_CACHE_TTL )); then
-      tr -d '[:space:]' < "$UPDATE_CACHE_FILE"
-      return 0
+      if read_cache_record "$UPDATE_CACHE_FILE"; then
+        record="$CACHE_RECORD"
+        cached_repo="${record%%|*}"; cached_version="${record#*|}"
+        if [[ "$cached_repo" == "$RESOLVED_REPOSITORY" && -n "$cached_version" ]]; then
+          printf '%s|%s' "$cached_repo" "$cached_version"
+          return 0
+        fi
+      fi
+      # Legacy version-only cache entries are safe to ignore and refresh.
     fi
   fi
-  latest="$(fetch_latest_version || true)"
-  [[ -n "$latest" ]] || return 1
-  printf "%s" "$latest" > "$UPDATE_CACHE_FILE" 2>/dev/null || true
-  printf "%s" "$latest"
+  record="$(fetch_latest_version || true)"
+  [[ -n "$record" ]] || return 1
+  write_update_cache "$record" 0 2>/dev/null || true
+  printf '%s' "$record"
 }
 
 latest_version_fresh() {
-  local latest
-  latest="$(fetch_latest_version || true)"
-  [[ -n "$latest" ]] || return 1
-  printf "%s" "$latest" > "$UPDATE_CACHE_FILE" 2>/dev/null || true
-  printf "%s" "$latest"
+  local record
+  resolve_repository || return 1
+  record="$(fetch_latest_version || true)"
+  [[ -n "$record" ]] || return 1
+  write_update_cache "$record" 0 2>/dev/null || true
+  printf '%s' "$record"
 }
 
 version_summary() {
-  local mode="${1:-cached}" current latest
+  local mode="${1:-cached}" current record latest
   current="$(installed_version)"
   if [[ "$mode" == "fresh" ]]; then
-    latest="$(latest_version_fresh || true)"
-    [[ -n "$latest" ]] || latest="$(latest_version_cached || true)"
+    record="$(latest_version_fresh || true)"
+    [[ -n "$record" ]] || record="$(latest_version_cached || true)"
   else
-    latest="$(latest_version_cached || true)"
+    record="$(latest_version_cached || true)"
   fi
+  latest="${record#*|}"
+  [[ "$record" == *'|'* ]] || latest=""
   echo "Installed version: $current"
   if [[ -n "$latest" ]]; then
     echo "Latest version:    $latest"
@@ -178,27 +421,64 @@ version_summary() {
   fi
 }
 
+cleanup_upgrade_dir() {
+  local path="$1"
+  valid_upgrade_temp_dir "$path" || return 1
+  rm -rf -- "$path"
+}
+
+valid_upgrade_temp_dir() {
+  local path="$1" expected_uid mode owner canonical parent
+  [[ "$path" =~ ^/tmp/tge-upgrade\.[A-Za-z0-9]+$ ]] || return 1
+  [[ -d "$path" && ! -L "$path" ]] || return 1
+  canonical="$(realpath -e -- "$path" 2>/dev/null)" || return 1
+  [[ "$canonical" == "$path" ]] || return 1
+  parent="$(dirname -- "$canonical")" || return 1
+  [[ "$parent" == /tmp ]] || return 1
+  expected_uid="$(id -u)" || return 1
+  owner="$(stat -c %u "$path" 2>/dev/null)" || return 1
+  mode="$(stat -c %a "$path" 2>/dev/null)" || return 1
+  [[ "$owner" == "$expected_uid" && "$mode" == 700 ]]
+}
+
+upgrade_installation_present() {
+  [[ -x /usr/local/bin/tge && -r /opt/v2raytge/meta.env ]]
+}
+
 upgrade_tge() {
-  local current latest source_url tmp_dir source_dir answer target_raw installed_after_upgrade
-  require_root || return 0
+  local current record selected_repo latest source_url tmp_dir="" source_dir answer target_raw installed_after_upgrade source_kind
+  if ! require_root; then
+    echo "tge upgrade must be run as root." >&2
+    return 1
+  fi
   command -v curl >/dev/null 2>&1 || { echo "curl is required for upgrade."; return 1; }
   command -v tar >/dev/null 2>&1 || { echo "tar is required for upgrade."; return 1; }
 
   current="$(installed_version)"
-  latest="$(fetch_latest_version || true)"
-  if [[ -z "$latest" ]]; then
-    echo "Could not find a GitHub release/tag. Falling back to branch '$REPO_BRANCH'."
-    latest="$REPO_BRANCH"
-    source_url="https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/heads/$REPO_BRANCH.tar.gz"
-    target_raw="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$REPO_BRANCH"
+  resolve_repository || return 1
+  selected_repo="$RESOLVED_REPOSITORY"
+  if (( RESOLVED_REF_EXPLICIT == 1 )); then
+    latest="$RESOLVED_REF"
+    if stable_version "$latest"; then source_kind=tag; else source_kind=branch; fi
   else
-    source_url="https://github.com/$REPO_OWNER/$REPO_NAME/archive/refs/tags/$latest.tar.gz"
-    target_raw="https://raw.githubusercontent.com/$REPO_OWNER/$REPO_NAME/$latest"
+    record="$(fetch_latest_version || true)"
+    if [[ -n "$record" ]]; then
+      latest="${record#*|}"
+      source_kind=tag
+    else
+      echo "Could not find a GitHub release/tag. Falling back to branch '$REPO_BRANCH'."
+      latest="$REPO_BRANCH"
+      source_kind=branch
+    fi
   fi
+  build_upgrade_urls "$selected_repo" "$latest" "$source_kind"
+  source_url="$UPGRADE_SOURCE_URL"
+  target_raw="$UPGRADE_RAW_URL"
 
   echo "Installed version: $current"
+  echo "Source repository: $selected_repo"
   echo "Target version:    $latest"
-  if [[ "$current" != "unknown" && "$latest" != "$REPO_BRANCH" ]] && ! version_gt "$latest" "$current"; then
+  if [[ "$current" != "unknown" && "$source_kind" == tag ]] && ! version_gt "$latest" "$current"; then
     read -r -p "No newer version detected. Reinstall target anyway? (yes/no) [no]: " answer
     [[ "${answer:-no}" =~ ^(yes|y|Y)$ ]] || { echo "Upgrade cancelled."; return 0; }
   else
@@ -206,26 +486,58 @@ upgrade_tge() {
     [[ "${answer:-yes}" =~ ^(yes|y|Y)$ ]] || { echo "Upgrade cancelled."; return 0; }
   fi
 
-  backup_config "pre-upgrade"
-  tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' RETURN
+  if ! backup_config "pre-upgrade"; then
+    echo "Upgrade stopped because the pre-upgrade configuration backup could not be created."
+    return 1
+  fi
+  if ! tmp_dir="$(TMPDIR=/tmp mktemp -d /tmp/tge-upgrade.XXXXXX)"; then
+    echo "Upgrade stopped because a secure temporary directory could not be created."
+    return 1
+  fi
+  if ! valid_upgrade_temp_dir "$tmp_dir"; then
+    echo "Upgrade stopped because the temporary directory was invalid."
+    return 1
+  fi
   echo "Downloading $source_url"
-  curl -fsSL "$source_url" | tar -xz -C "$tmp_dir"
+  if ! curl -fsSL "$source_url" -o "$tmp_dir/source.tar.gz"; then
+    echo "Upgrade archive download failed."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
+    return 1
+  fi
+  if ! tar -xzf "$tmp_dir/source.tar.gz" -C "$tmp_dir"; then
+    echo "Upgrade archive extraction failed."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
+    return 1
+  fi
   source_dir="$(find "$tmp_dir" -mindepth 1 -maxdepth 1 -type d | head -n 1)"
   if [[ -z "$source_dir" || ! -f "$source_dir/deploy.sh" ]]; then
     echo "Downloaded archive does not contain deploy.sh."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
     return 1
   fi
 
   echo "Installing updated V2rayTGE files..."
-  (cd "$source_dir" && REPO_RAW="$target_raw" GH_REPO="$REPO_OWNER/$REPO_NAME" bash deploy.sh)
-  rm -f "$UPDATE_CACHE_FILE" 2>/dev/null || true
-  installed_after_upgrade="$(installed_version)"
-  if [[ "$latest" != "$REPO_BRANCH" && "$installed_after_upgrade" != "$latest" ]]; then
-    echo "WARNING: Upgrade target was $latest but installed version is $installed_after_upgrade."
-    echo "The published tag/release may contain outdated metadata."
+  if ! (cd "$source_dir" && REPO_RAW="$target_raw" GH_REPO="$selected_repo" TGE_SOURCE_REF="$latest" bash deploy.sh); then
+    echo "Upgrade installer failed; a full rollback after partial installer changes is not available."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
     return 1
   fi
+  if ! clear_update_cache 2>/dev/null; then
+    echo "WARNING: Upgrade succeeded but the version cache could not be cleared." >&2
+  fi
+  if ! upgrade_installation_present; then
+    echo "WARNING: Required installed TGE files are missing after upgrade."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
+    return 1
+  fi
+  installed_after_upgrade="$(installed_version)"
+  if [[ "$source_kind" == tag && "$installed_after_upgrade" != "$latest" ]]; then
+    echo "WARNING: Upgrade target was $latest but installed version is $installed_after_upgrade."
+    echo "The published tag/release may contain outdated metadata."
+    cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Could not clean temporary upgrade directory." >&2
+    return 1
+  fi
+  cleanup_upgrade_dir "$tmp_dir" || echo "WARNING: Upgrade succeeded but temporary-directory cleanup failed." >&2
   echo "Upgrade complete. $CFG was preserved."
 }
 
@@ -608,36 +920,39 @@ logs() {
   pause
 }
 
-case "${1:-}" in
-  help) help_intro; exit 0 ;;
-  configure|config) config_wizard; exit 0 ;;
-  edit) edit_config_menu; exit 0 ;;
-  activate) activate; exit 0 ;;
-  deactivate) deactivate; exit 0 ;;
-  health|check) health; exit 0 ;;
-  logs|log) logs; exit 0 ;;
-  version|check-upgrade) version_summary fresh; exit 0 ;;
-  upgrade) upgrade_tge; exit $? ;;
-  backup) require_root && backup_config "manual"; exit $? ;;
-  restore) require_root && restore_latest_config_backup; exit $? ;;
-  "" ) ;;
-  *) echo "Usage: tge [help|configure|edit|activate|deactivate|health|logs|version|check-upgrade|upgrade|backup|restore]"; exit 2 ;;
-esac
-
-while true; do
-  menu
-  read -r choice
-  case "$choice" in
-    1) help_intro ;;
-    2) config_wizard ;;
-    3) edit_config_menu ;;
-    4) activate ;;
-    5) deactivate ;;
-    6) health ;;
-    7) logs ;;
-    8) upgrade_tge; pause ;;
-    9) backup_restore_menu ;;
-    0) exit 0 ;;
-    *) LAST_ERROR="Invalid selection: $choice" ;;
+if [[ "${BASH_SOURCE[0]}" == "$0" ]]; then
+  load_runtime_files
+  case "${1:-}" in
+    help) help_intro; exit 0 ;;
+    configure|config) config_wizard; exit 0 ;;
+    edit) edit_config_menu; exit 0 ;;
+    activate) activate; exit 0 ;;
+    deactivate) deactivate; exit 0 ;;
+    health|check) health; exit 0 ;;
+    logs|log) logs; exit 0 ;;
+    version|check-upgrade) version_summary fresh; exit 0 ;;
+    upgrade) upgrade_tge; exit $? ;;
+    backup) require_root && backup_config "manual"; exit $? ;;
+    restore) require_root && restore_latest_config_backup; exit $? ;;
+    "" ) ;;
+    *) echo "Usage: tge [help|configure|edit|activate|deactivate|health|logs|version|check-upgrade|upgrade|backup|restore]"; exit 2 ;;
   esac
-done
+
+  while true; do
+    menu
+    read -r choice
+    case "$choice" in
+      1) help_intro ;;
+      2) config_wizard ;;
+      3) edit_config_menu ;;
+      4) activate ;;
+      5) deactivate ;;
+      6) health ;;
+      7) logs ;;
+      8) upgrade_tge; pause ;;
+      9) backup_restore_menu ;;
+      0) exit 0 ;;
+      *) LAST_ERROR="Invalid selection: $choice" ;;
+    esac
+  done
+fi

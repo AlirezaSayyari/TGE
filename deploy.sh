@@ -1,8 +1,18 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-REPO_RAW="${REPO_RAW:-https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main}"
-GH_REPO="${GH_REPO:-AlirezaSayyari/V2rayTGE}"
+CANONICAL_REPOSITORY="runovelhq/tge"
+REPOSITORY_CANDIDATES=(
+  "$CANONICAL_REPOSITORY"
+  "AlirezaSayyari/TGE"
+  "AlirezaSayyari/V2rayTGE"
+)
+GH_REPO_WAS_SET="${GH_REPO+x}"
+REPO_RAW_WAS_SET="${REPO_RAW+x}"
+SOURCE_REF_WAS_SET="${TGE_SOURCE_REF+x}"
+GH_REPO="${GH_REPO:-}"
+REPO_RAW="${REPO_RAW:-}"
+SOURCE_REF="${TGE_SOURCE_REF:-${TGE_CLI_BRANCH:-main}}"
 
 INSTALL_DIR="/opt/tge"
 BIN_DIR="/usr/local/bin"
@@ -49,33 +59,224 @@ read_prompt(){
   return 0
 }
 
+valid_repository(){
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._-]*/[A-Za-z0-9][A-Za-z0-9._-]*$ && "$1" != *..* ]]
+}
 
-discover_cli_metadata(){
-  local rel_json tag branch_guess
-  branch_guess="$(echo "$REPO_RAW" | awk -F'/' '{print $NF}')"
-  [[ -n "$branch_guess" ]] || branch_guess="main"
+valid_ref(){
+  [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9._/-]*$ && "$1" != /* && "$1" != */ && "$1" != *..* && "$1" != *//* ]]
+}
 
-  if [[ -r VERSION && "${TGE_CLI_VERSION:-}" == "v1.0.0" ]]; then
-    tag="$(tr -d '[:space:]' < VERSION)"
-    if [[ -n "$tag" ]]; then
-      TGE_CLI_VERSION="$tag"
-      [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+valid_simple_ref(){
+  valid_ref "$1" && [[ "$1" != */* ]]
+}
+
+stable_version(){
+  [[ "$1" =~ ^[vV]?[0-9]{1,9}\.[0-9]{1,9}\.[0-9]{1,9}$ ]]
+}
+
+url_has_credentials(){
+  local authority="${1#https://}"
+  authority="${authority%%/*}"
+  [[ "$authority" == *@* ]]
+}
+
+raw_url_parts(){
+  local raw="$1" rest owner repo ref
+  [[ "$raw" != *\?* && "$raw" != *\#* ]] || return 1
+  [[ "$raw" =~ ^https://raw\.githubusercontent\.com/[^/]+/[^/]+/[^/]+$ ]] || return 1
+  rest="${raw#https://raw.githubusercontent.com/}"
+  owner="${rest%%/*}"; rest="${rest#*/}"
+  repo="${rest%%/*}"; ref="${rest#*/}"
+  valid_repository "$owner/$repo" && valid_simple_ref "$ref" || return 1
+  printf '%s/%s|%s\n' "$owner" "$repo" "$ref"
+}
+
+github_repository_available(){
+  local repo="$1" response rc body code full_name
+  response="$(curl -sS -L --connect-timeout 4 --max-time 10 \
+    -w $'\n%{http_code}' "https://api.github.com/repos/$repo" 2>&1)"
+  rc=$?
+  if (( rc != 0 )); then
+    case "$rc" in
+      6) warn "Repository check for $repo failed: DNS resolution error." ;;
+      7) warn "Repository check for $repo failed: connection error." ;;
+      28) warn "Repository check for $repo failed: network timeout." ;;
+      *) warn "Repository check for $repo failed: curl error $rc." ;;
+    esac
+    return 2
+  fi
+  code="${response##*$'\n'}"
+  body="${response%$'\n'*}"
+  case "$code" in
+    200)
+      full_name="$(printf '%s' "$body" | sed -n 's/.*"full_name"[[:space:]]*:[[:space:]]*"\([A-Za-z0-9._-]*\/[A-Za-z0-9._-]*\)".*/\1/p' | head -n 1)"
+      valid_repository "$full_name" || {
+        warn "Repository check for $repo returned malformed GitHub metadata."
+        return 2
+      }
+      AVAILABLE_REPOSITORY="$full_name"
+      return 0
+      ;;
+    404) return 1 ;;
+    403|429)
+      warn "Repository check for $repo was rate-limited or forbidden (HTTP $code)."
+      return 2
+      ;;
+    *)
+      warn "Repository check for $repo failed with GitHub HTTP $code."
+      return 2
+      ;;
+  esac
+}
+
+resolve_repository(){
+  local parts raw_repo raw_ref candidate result
+
+  if [[ -n "$REPO_RAW_WAS_SET" ]]; then
+    if [[ "$REPO_RAW" != https://* ]] || url_has_credentials "$REPO_RAW" || [[ "$REPO_RAW" == *\?* || "$REPO_RAW" == *\#* ]]; then
+      err "REPO_RAW must be a credential-free HTTPS URL without a query or fragment."
+      return 2
+    fi
+    if parts="$(raw_url_parts "$REPO_RAW" 2>/dev/null)"; then
+      raw_repo="${parts%%|*}"
+      raw_ref="${parts#*|}"
+      if [[ -n "$GH_REPO_WAS_SET" && "$GH_REPO" != "$raw_repo" ]]; then
+        err "GH_REPO ($GH_REPO) and REPO_RAW ($raw_repo) select different repositories."
+        return 2
+      fi
+      if [[ -n "$SOURCE_REF_WAS_SET" && "$SOURCE_REF" != "$raw_ref" ]]; then
+        err "TGE_SOURCE_REF and REPO_RAW select different refs."
+        return 2
+      fi
+      GH_REPO="$raw_repo"
+      SOURCE_REF="$raw_ref"
+    elif [[ -n "$GH_REPO_WAS_SET" && -n "$SOURCE_REF_WAS_SET" ]] &&
+         valid_repository "$GH_REPO" && valid_ref "$SOURCE_REF" &&
+         [[ "$REPO_RAW" == "https://raw.githubusercontent.com/$GH_REPO/$SOURCE_REF" ]]; then
+      : # An explicit TGE_SOURCE_REF disambiguates a slash-containing raw base.
+    elif [[ "$REPO_RAW" == https://raw.githubusercontent.com/* ]]; then
+      err "REPO_RAW is malformed or has an ambiguous slash-containing ref."
+      return 2
+    elif [[ -z "$GH_REPO_WAS_SET" ]]; then
+      GH_REPO=""
+      SOURCE_REF="custom"
+      warn "Custom REPO_RAW selected; GitHub Release metadata discovery is disabled."
+    else
+      err "Custom REPO_RAW cannot be paired atomically with GH_REPO; use a GitHub raw URL or REPO_RAW alone."
+      return 2
+    fi
+  elif [[ -n "$GH_REPO_WAS_SET" ]]; then
+    valid_repository "$GH_REPO" || { err "GH_REPO must be a valid GitHub owner/repository."; return 2; }
+    valid_ref "$SOURCE_REF" || { err "TGE_SOURCE_REF contains unsupported characters or path components."; return 2; }
+    REPO_RAW="https://raw.githubusercontent.com/$GH_REPO/$SOURCE_REF"
+  else
+    for candidate in "${REPOSITORY_CANDIDATES[@]}"; do
+      if github_repository_available "$candidate"; then
+        GH_REPO="$AVAILABLE_REPOSITORY"
+        REPO_RAW="https://raw.githubusercontent.com/$GH_REPO/$SOURCE_REF"
+        break
+      else
+        result=$?
+        (( result == 1 )) && continue
+        err "Repository resolution stopped after a transient or malformed GitHub response."
+        return 2
+      fi
+    done
+    if [[ -z "$GH_REPO" ]]; then
+      err "No usable TGE repository was found."
+      return 1
     fi
   fi
 
+  [[ -n "$REPO_RAW" ]] || REPO_RAW="https://raw.githubusercontent.com/$GH_REPO/$SOURCE_REF"
+  log "Source repository: ${GH_REPO:-custom REPO_RAW} (ref: $SOURCE_REF)"
+}
+
+write_installed_metadata(){
+  local target="$1" target_dir meta_tmp value
+  valid_repository "${GH_REPO:-$CANONICAL_REPOSITORY}" || { err "Unsafe repository metadata value."; return 1; }
+  valid_repository "$CANONICAL_REPOSITORY" || return 1
+  valid_ref "$SOURCE_REF" || { err "Unsafe source-ref metadata value."; return 1; }
+  for value in "$TGE_CLI_VERSION" "$TGE_CLI_BRANCH" "$TGE_CLI_CHANNEL"; do
+    [[ "$value" != *$'\n'* && "$value" != *$'\r'* ]] || { err "Unsafe multiline metadata value."; return 1; }
+  done
+  target_dir="$(dirname "$target")"
+  meta_tmp="$(mktemp "$target_dir/.meta.env.XXXXXX")"
+  if [[ -f "$target" ]]; then
+    grep -vE '^(TGE_CLI_VERSION|TGE_CLI_BRANCH|TGE_CLI_CHANNEL|TGE_SOURCE_REPOSITORY|TGE_CANONICAL_REPOSITORY|TGE_SOURCE_REF)=' "$target" > "$meta_tmp" || true
+  fi
+  {
+    printf 'TGE_CLI_VERSION=%q\n' "$TGE_CLI_VERSION"
+    printf 'TGE_CLI_BRANCH=%q\n' "$TGE_CLI_BRANCH"
+    printf 'TGE_CLI_CHANNEL=%q\n' "$TGE_CLI_CHANNEL"
+    printf 'TGE_SOURCE_REPOSITORY=%q\n' "${GH_REPO:-custom}"
+    printf 'TGE_CANONICAL_REPOSITORY=%q\n' "$CANONICAL_REPOSITORY"
+    printf 'TGE_SOURCE_REF=%q\n' "$SOURCE_REF"
+  } >> "$meta_tmp"
+  chmod 0644 "$meta_tmp"
+  chown root:root "$meta_tmp" 2>/dev/null || true
+  mv -fT "$meta_tmp" "$target"
+}
+
+version_gt(){
+  local left="${1#[vV]}" right="${2#[vV]}" lmaj lmin lpat rmaj rmin rpat
+  stable_version "$1" && stable_version "$2" || return 1
+  IFS=. read -r lmaj lmin lpat <<< "$left"
+  IFS=. read -r rmaj rmin rpat <<< "$right"
+  (( 10#$lmaj > 10#$rmaj ||
+     (10#$lmaj == 10#$rmaj && 10#$lmin > 10#$rmin) ||
+     (10#$lmaj == 10#$rmaj && 10#$lmin == 10#$rmin && 10#$lpat > 10#$rpat) ))
+}
+
+highest_version_from_tags(){
+  local json="$1" candidate highest=""
+  while IFS= read -r candidate; do
+    candidate="${candidate#*\"name\"}"
+    candidate="${candidate#*\"}"
+    candidate="${candidate%%\"*}"
+    stable_version "$candidate" || continue
+    if [[ -z "$highest" ]] || version_gt "$candidate" "$highest"; then
+      highest="$candidate"
+    fi
+  done < <(printf '%s' "$json" | grep -o '"name"[[:space:]]*:[[:space:]]*"[^"]*"' || true)
+  printf '%s' "$highest"
+}
+
+
+discover_cli_metadata(){
+  local rel_json tags_json tag latest_tag raw_version
+
+  raw_version="$(curl -fsSL --connect-timeout 4 --max-time 10 "$REPO_RAW/VERSION" 2>/dev/null || true)"
+  raw_version="$(printf '%s' "$raw_version" | tr -d '[:space:]')"
+  if stable_version "$raw_version"; then
+    TGE_CLI_VERSION="$raw_version"
+    [[ -n "$REPO_RAW_WAS_SET" && "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+  fi
+
   # Respect explicit user-provided values
-  if [[ "${TGE_CLI_BRANCH:-}" == "main" && "$branch_guess" != "main" ]]; then
-    TGE_CLI_BRANCH="$branch_guess"
+  if [[ "${TGE_CLI_BRANCH:-}" == "main" && "$SOURCE_REF" != "main" ]]; then
+    TGE_CLI_BRANCH="$SOURCE_REF"
   fi
 
   # Auto-detect only when still default-like
-  if [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" || "${TGE_CLI_CHANNEL:-}" == "latest" ]]; then
+  if [[ -n "$GH_REPO" && -z "$SOURCE_REF_WAS_SET" && -z "$REPO_RAW_WAS_SET" &&
+        ( "${TGE_CLI_VERSION:-}" == "v1.0.0" || "${TGE_CLI_CHANNEL:-}" == "latest" ) ]]; then
     rel_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/releases/latest" 2>/dev/null || true)"
-    if [[ -n "$rel_json" ]]; then
-      tag="$(echo "$rel_json" | jq -r '.tag_name // empty' 2>/dev/null || true)"
-      if [[ -n "$tag" ]]; then
-        [[ "${TGE_CLI_VERSION:-}" == "v1.0.0" ]] && TGE_CLI_VERSION="$tag"
-        [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+    tag="$(printf '%s' "$rel_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -n 1)"
+    stable_version "$tag" || tag=""
+    tags_json="$(curl -fsSL "https://api.github.com/repos/${GH_REPO}/tags?per_page=100" 2>/dev/null || true)"
+    latest_tag="$(highest_version_from_tags "$tags_json")"
+    if [[ -z "$tag" ]] || { [[ -n "$latest_tag" ]] && version_gt "$latest_tag" "$tag"; }; then
+      tag="$latest_tag"
+    fi
+    if [[ -n "$tag" ]]; then
+      TGE_CLI_VERSION="$tag"
+      [[ "${TGE_CLI_CHANNEL:-}" == "latest" ]] && TGE_CLI_CHANNEL="stable"
+      if [[ -z "$REPO_RAW_WAS_SET" ]]; then
+        SOURCE_REF="$tag"
+        REPO_RAW="https://raw.githubusercontent.com/$GH_REPO/$SOURCE_REF"
+        TGE_CLI_BRANCH="$SOURCE_REF"
       fi
     fi
   fi
@@ -457,11 +658,7 @@ install_files(){
   install -m 0755 /opt/tge/bin/tge-logs       /usr/local/sbin/tge-logs
   install -m 0644 /opt/tge/bin/tge-lib.sh /opt/v2raytge/tge-lib.sh
   install -m 0644 /opt/tge/VERSION /opt/v2raytge/VERSION
-cat > /opt/v2raytge/meta.env <<EOF
-TGE_CLI_VERSION="$TGE_CLI_VERSION"
-TGE_CLI_BRANCH="$TGE_CLI_BRANCH"
-TGE_CLI_CHANNEL="$TGE_CLI_CHANNEL"
-EOF
+  write_installed_metadata /opt/v2raytge/meta.env
   chmod 0644 /opt/v2raytge/meta.env
   install -m 0644 /opt/tge/systemd/tge-gre.service   /etc/systemd/system/tge-gre.service
   install -m 0644 /opt/tge/systemd/tge-apply.service /etc/systemd/system/tge-apply.service
@@ -510,6 +707,8 @@ EOF
 
 main(){
   need_root
+  resolve_repository
+  discover_cli_metadata
 
   stop_apt_background_services
 
@@ -527,11 +726,13 @@ main(){
   sed -i 's/\r$//' /opt/v2raytge/docker/docker-compose.yml
   cd /opt/v2raytge/docker
   docker compose up -d
-  discover_cli_metadata
   install_files
 
   start_apt_background_services
   post_notes
 }
 
-main "$@"
+# Execute from a file or Bash stdin; stay inert only when sourced by another script.
+if [[ -z "${BASH_SOURCE[0]-}" || "${BASH_SOURCE[0]}" == "$0" ]]; then
+  main "$@"
+fi

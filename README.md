@@ -1,5 +1,5 @@
-![GitHub stars](https://img.shields.io/github/stars/alirezasayyari/V2rayTGE?style=for-the-badge)
-![GitHub forks](https://img.shields.io/github/forks/alirezasayyari/V2rayTGE?style=for-the-badge)
+![GitHub stars](https://img.shields.io/github/stars/AlirezaSayyari/TGE?style=for-the-badge)
+![GitHub forks](https://img.shields.io/github/forks/AlirezaSayyari/TGE?style=for-the-badge)
 ![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
 ![Docker](https://img.shields.io/badge/docker-ready-blue?style=for-the-badge)
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
@@ -94,7 +94,7 @@ Internet
 ## Install (one-liner)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
 sudo tge
 ````
 
@@ -104,6 +104,26 @@ After install:
 * Compose: `/opt/v2raytge/docker/docker-compose.yml`
 * CLI: `/usr/local/sbin/tge`
 * Logs: `/var/log/v2raytge/`
+
+Repository source precedence for advanced or mirrored installs:
+
+1. Explicit `GH_REPO` plus `REPO_RAW` (both must identify the same GitHub repository).
+2. Explicit `REPO_RAW` alone (a GitHub raw URL derives repository metadata; a custom URL disables Release lookup).
+3. Explicit `GH_REPO` alone (raw URLs are derived from it and the selected ref).
+4. Automatic discovery: `runovelhq/tge`, then `AlirezaSayyari/TGE`, then the historical `AlirezaSayyari/V2rayTGE` fallback.
+
+Each operation resolves its repository once. Automatic fallback continues only when GitHub definitively returns HTTP 404. Network errors, rate limits, server errors, and malformed responses stop resolution instead of silently selecting an older source. Redirected repositories use the canonical identity returned by GitHub.
+
+GitHub raw overrides accept a simple branch or tag such as `main` or `v1.2.0`. A raw URL cannot unambiguously encode a slash-containing ref as a base URL, so such raw overrides are rejected; use `GH_REPO` with `TGE_SOURCE_REF` for an explicit slash-containing branch. When `REPO_RAW` and `TGE_SOURCE_REF` are both supplied, their refs must match exactly. Query strings, fragments, embedded credentials, malformed repositories, and mismatched override pairs are rejected. A custom non-GitHub `REPO_RAW` is installation-only and cannot be used by `tge upgrade`.
+
+Pass overrides across the `sudo` boundary on the `sudo` command itself:
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh |
+  sudo GH_REPO=owner/repository REPO_RAW=https://raw.githubusercontent.com/owner/repository/main bash
+```
+
+An explicit ref is installed or upgraded exactly from that ref; latest Release/tag discovery cannot replace it. Stable tag refs use installed-version verification, while branch refs require a successful installer and the expected installed files. Once selected, metadata and every downloaded project file use the same repository and ref. Stable versions use `vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, with at most nine decimal digits per component. Discovery examines the first 100 GitHub tags; prerelease and non-version tags are ignored. The future canonical repository is `runovelhq/tge`.
 
 ---
 
@@ -385,7 +405,7 @@ When mode is `legacy` and backend is not legacy, deploy script now does this:
 5. Shows command to run after reboot:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
 ```
 
 > Prompt input is read from `/dev/tty`, so confirmations still work with `curl ... | sudo bash`.
@@ -416,7 +436,7 @@ sudo systemctl restart docker
 4. Reboot if backend was switched, then rerun deploy:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/V2rayTGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
 ```
 
 5. Re-apply TGE rules/services:
