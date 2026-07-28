@@ -1,0 +1,90 @@
+name: Bug report
+description: Report a reproducible TGE installation, upgrade, CLI, or networking defect.
+title: "[Bug]: "
+labels:
+  - bug
+body:
+  - type: dropdown
+    id: installation_mode
+    attributes:
+      label: Installation mode
+      options:
+        - Fresh installation
+        - Upgrade
+        - Existing installation
+        - Development or disposable test environment
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: Operating system and version
+      placeholder: Ubuntu Server 24.04 LTS
+    validations:
+      required: true
+  - type: input
+    id: version
+    attributes:
+      label: TGE version
+      placeholder: v1.2.5
+    validations:
+      required: true
+  - type: dropdown
+    id: deployment_mode
+    attributes:
+      label: Deployment mode
+      multiple: true
+      options:
+        - GRE edge
+        - Direct edge
+        - v2rayA system-tun egress
+        - WireGuard egress
+        - Server default-gateway egress
+        - Other or not yet configured
+    validations:
+      required: true
+  - type: textarea
+    id: network_environment
+    attributes:
+      label: Relevant networking environment
+      description: Describe only the minimal topology, interfaces, and address ranges needed to reproduce the problem. Do not attach production diagrams or identifying addresses.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Exact command
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction steps
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: Redacted logs
+      description: Include only relevant excerpts. Remove credentials, tokens, passwords, private keys, hostnames, identifying addresses, full firewall exports, and customer data.
+      render: text
+  - type: checkboxes
+    id: sensitive_data
+    attributes:
+      label: Sensitive information
+      options:
+        - label: I removed credentials, tokens, passwords, private keys, identifying network information, and other sensitive data.
+          required: true

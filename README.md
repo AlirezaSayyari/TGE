@@ -1,6 +1,7 @@
-![GitHub stars](https://img.shields.io/github/stars/AlirezaSayyari/TGE?style=for-the-badge)
-![GitHub forks](https://img.shields.io/github/forks/AlirezaSayyari/TGE?style=for-the-badge)
-![License](https://img.shields.io/badge/license-MIT-blue?style=for-the-badge)
+![GitHub stars](https://img.shields.io/github/stars/runovelhq/tge?style=for-the-badge)
+![GitHub forks](https://img.shields.io/github/forks/runovelhq/tge?style=for-the-badge)
+![License](https://img.shields.io/badge/license-Apache--2.0-blue?style=for-the-badge)
+[![Shell validation](https://github.com/runovelhq/tge/actions/workflows/shell.yml/badge.svg)](https://github.com/runovelhq/tge/actions/workflows/shell.yml)
 ![Docker](https://img.shields.io/badge/docker-ready-blue?style=for-the-badge)
 ![Network](https://img.shields.io/badge/network-egress-orange?style=for-the-badge)
 
@@ -94,7 +95,7 @@ Internet
 ## Install (one-liner)
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/runovelhq/tge/main/deploy.sh | sudo bash
 sudo tge
 ````
 
@@ -102,7 +103,7 @@ After install:
 
 * Config: `/opt/v2raytge/config.env`
 * Compose: `/opt/v2raytge/docker/docker-compose.yml`
-* CLI: `/usr/local/sbin/tge`
+* CLI: `/usr/local/bin/tge`
 * Logs: `/var/log/v2raytge/`
 
 Repository source precedence for advanced or mirrored installs:
@@ -119,11 +120,22 @@ GitHub raw overrides accept a simple branch or tag such as `main` or `v1.2.0`. A
 Pass overrides across the `sudo` boundary on the `sudo` command itself:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh |
+curl -fsSL https://raw.githubusercontent.com/runovelhq/tge/main/deploy.sh |
   sudo GH_REPO=owner/repository REPO_RAW=https://raw.githubusercontent.com/owner/repository/main bash
 ```
 
-An explicit ref is installed or upgraded exactly from that ref; latest Release/tag discovery cannot replace it. Stable tag refs use installed-version verification, while branch refs require a successful installer and the expected installed files. Once selected, metadata and every downloaded project file use the same repository and ref. Stable versions use `vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, with at most nine decimal digits per component. Discovery examines the first 100 GitHub tags; prerelease and non-version tags are ignored. The future canonical repository is `runovelhq/tge`.
+An explicit ref is installed or upgraded exactly from that ref; latest Release/tag discovery cannot replace it. Stable tag refs use installed-version verification, while branch refs require a successful installer and the expected installed files. Once selected, metadata and every downloaded project file use the same repository and ref. Stable versions use `vMAJOR.MINOR.PATCH` or `MAJOR.MINOR.PATCH`, with at most nine decimal digits per component. Discovery examines the first 100 GitHub tags; prerelease and non-version tags are ignored. The current canonical repository is `runovelhq/tge`; `AlirezaSayyari/TGE` and `AlirezaSayyari/V2rayTGE` are deprecated compatibility sources retained temporarily for migration fallback.
+
+## Repository resources
+
+- Canonical repository: [runovelhq/tge](https://github.com/runovelhq/tge)
+- Clone: `git clone git@github.com:runovelhq/tge.git`
+- Releases: [GitHub Releases](https://github.com/runovelhq/tge/releases)
+- Issues: [Report a bug or request a feature](https://github.com/runovelhq/tge/issues)
+- Security: [Security policy](SECURITY.md)
+- Contributing: [Contribution guide](CONTRIBUTING.md)
+- Changes: [Changelog](CHANGELOG.md)
+- Migration compatibility: [Migration notes](MIGRATION.md)
 
 ---
 
@@ -405,7 +417,7 @@ When mode is `legacy` and backend is not legacy, deploy script now does this:
 5. Shows command to run after reboot:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/runovelhq/tge/main/deploy.sh | sudo bash
 ```
 
 > Prompt input is read from `/dev/tty`, so confirmations still work with `curl ... | sudo bash`.
@@ -436,7 +448,7 @@ sudo systemctl restart docker
 4. Reboot if backend was switched, then rerun deploy:
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/AlirezaSayyari/TGE/main/deploy.sh | sudo bash
+curl -fsSL https://raw.githubusercontent.com/runovelhq/tge/main/deploy.sh | sudo bash
 ```
 
 5. Re-apply TGE rules/services:
@@ -483,7 +495,7 @@ sudo systemctl disable --now tge-apply.timer tge-apply.path tge-apply.service tg
 
 ```bash
 sudo rm -rf /opt/v2raytge /var/log/v2raytge
-sudo rm -f /usr/local/sbin/tge /usr/local/sbin/tge-*
+sudo rm -f /usr/local/bin/tge /usr/local/sbin/tge-*
 sudo rm -f /etc/systemd/system/tge-*.service /etc/systemd/system/tge-*.timer /etc/systemd/system/tge-*.path
 sudo systemctl daemon-reload
 ```

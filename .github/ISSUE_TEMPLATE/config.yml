@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Security vulnerability
+    url: https://github.com/runovelhq/tge/security/policy
+    about: Read the private reporting guidance before sharing vulnerability details.

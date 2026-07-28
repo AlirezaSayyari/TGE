@@ -1,0 +1,37 @@
+name: Feature request
+description: Propose a focused improvement to TGE.
+title: "[Feature]: "
+labels:
+  - enhancement
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem to solve
+      description: Describe the operational or user problem without assuming a particular solution.
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed behavior
+    validations:
+      required: true
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+  - type: textarea
+    id: compatibility
+    attributes:
+      label: Compatibility impact
+      description: Explain effects on existing installations, repository fallbacks, runtime paths, CLI names, configuration, or services.
+    validations:
+      required: true
+  - type: textarea
+    id: operations
+    attributes:
+      label: Operational impact
+      description: Explain expected effects on routing, firewall, Docker, systemd, upgrades, downtime, or rollback.
+    validations:
+      required: true
